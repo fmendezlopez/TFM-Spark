@@ -34,9 +34,9 @@ object NonSupervisedRecommender {
       .appName("Allrecipes Recommender")
       .getOrCreate()
 
-    preprocesser
-    contentAnalyzer
-    profileLearner
+    //preprocesser
+    //contentAnalyzer
+    //profileLearner
     filteringComponent
   }
 
@@ -496,7 +496,15 @@ object NonSupervisedRecommender {
       .select(col("ID_RECIPE").cast(IntegerType), col("ID_AUTHOR").cast(IntegerType).as("ID_USER"), col("RATING").cast(IntegerType))
 
     val outputCSV = CSVManager.openCSVWriter(baseOutputPath, "similarities.csv", options("sep").charAt(0))
-    outputCSV.writeRow(Seq("ID_USER", "ID_RECIPE", "RATING", "SIMILARITY"))
+    outputCSV.writeRow(Seq(
+      "ID_USER",
+      "ID_RECIPE",
+      "RATING",
+      "NUT_SIMILARITY",
+      "ING_N_SIMILARITY",
+      "ING_WEIGHTED_SIMILARITY",
+      "N_SIMILARITY",
+      "WEIGHTED_SIMILARITY"))
 
     /*
     println(nutrition.count())
@@ -540,13 +548,22 @@ object NonSupervisedRecommender {
         val nutrSimilarity: Double = if(recipeNutr.count() == 0) 0.0f else nutritionSimilarity(userNutrition, recipeNutr.head())
 
         val recipeIng = ingredients.filter(s"ID_RECIPE = ${recipeID}")
-        val ingSimilarity: Double = if(recipeIng.count() == 0) 0.0f else ingredientsSimilarity(userIngredients, recipeIng, "WEIGHTED-N")
+        val ingSimilarity1: Double = if(recipeIng.count() == 0) 0.0f else ingredientsSimilarity(userIngredients, recipeIng, "WEIGHTED-N")
+        val ingSimilarity2: Double = if(recipeIng.count() == 0) 0.0f else ingredientsSimilarity(userIngredients, recipeIng, "N")
 
-        val similarity:Double = (ingSimilarity + nutrSimilarity) / 2
+        val similarity1:Double = (ingSimilarity1 + nutrSimilarity) / 2
+        val similarity2:Double = (ingSimilarity2 + nutrSimilarity) / 2
+        /*
         if(similarity.isNaN){
           println(s"Similarity is NaN: ${ingSimilarity}, ${nutrSimilarity}")
         }
-        outputCSV.writeRow(Seq(userID.toString, recipeID.toString, rating.toString, similarity.formatted("%.4f")))
+        */
+        outputCSV.writeRow(Seq(userID.toString, recipeID.toString, rating.toString,
+          nutrSimilarity.formatted("%.4f"),
+          ingSimilarity1.formatted("%.4f"),
+          ingSimilarity2.formatted("%.4f"),
+          similarity1.formatted("%.4f"),
+          similarity2.formatted("%.4f")))
       })
       //outputCSV.writeAll(similarities.map(a => a.))
     })
