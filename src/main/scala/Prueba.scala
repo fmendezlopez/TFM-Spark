@@ -1,6 +1,6 @@
 import java.io.File
 
-import es.uam.eps.tfm.fmendezlopez.NonSupervisedRecommender
+import es.uam.eps.tfm.fmendezlopez.allrecipes.NonSupervisedRecommender
 import es.uam.eps.tfm.fmendezlopez.utils.SparkUtils
 import org.apache.spark.ml.feature.PCA
 import org.apache.spark.ml.linalg.Vectors

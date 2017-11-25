@@ -1,11 +1,11 @@
-package es.uam.eps.tfm.fmendezlopez
+package es.uam.eps.tfm.fmendezlopez.allrecipes
 
 import java.io.File
 
 import es.uam.eps.tfm.fmendezlopez.utils.{CSVManager, SparkUtils}
-import org.apache.spark.sql.{Column, DataFrame, Row, SparkSession}
-import org.apache.spark.sql.types._
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.types._
+import org.apache.spark.sql.{Column, DataFrame, Row, SparkSession}
 
 /**
   * Created by franm on 11/10/2017.
@@ -21,8 +21,8 @@ object NonSupervisedRecommender {
     "encoding" -> "UTF-8",
     "header" -> "true"
   )
-  val baseOutputPath = "./src/main/resources/output/recommendation/allrecipes"
-  val baseInputPath = "./src/main/resources/input/recommendation/allrecipes"
+  val baseOutputPath = "./src/main/resources/output/recommendation/allrecipes/nonsupervised"
+  val baseInputPath = "./src/main/resources/output/recommendation/allrecipes/preprocessing"
   val datasetPath = s"${baseOutputPath}${File.separator}preprocessed"
   val trainingPath = s"${baseOutputPath}${File.separator}training"
   val testPath = s"${baseOutputPath}${File.separator}test"
@@ -35,8 +35,8 @@ object NonSupervisedRecommender {
       .getOrCreate()
 
     //preprocesser
-    //contentAnalyzer
-    //profileLearner
+    contentAnalyzer
+    profileLearner
     filteringComponent
   }
 
@@ -102,8 +102,8 @@ object NonSupervisedRecommender {
     def filterDataset(valid_recipes: DataFrame, dfs: Seq[DataFrame]): Seq[DataFrame] = {
       dfs.map(df => {
         println(s"Initial size: ${df.count()}")
-        val result = df.join(valid_recipes, Seq("ID_RECIPE"))
-          .select(df.columns.map(col(_)):_*)
+        val result = df.join(valid_recipes, "ID_RECIPE")
+          .select(df.columns.map(df(_)):_*)
         println(s"Final size: ${result.count()}")
         result
       })
