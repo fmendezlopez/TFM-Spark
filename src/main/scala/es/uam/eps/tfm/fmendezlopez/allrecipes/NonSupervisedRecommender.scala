@@ -3,9 +3,11 @@ package es.uam.eps.tfm.fmendezlopez.allrecipes
 import java.io.File
 
 import es.uam.eps.tfm.fmendezlopez.utils.{CSVManager, SparkUtils}
+import es.uam.eps.tfm.fmendezlopez.utils.SparkUtils._
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{Column, DataFrame, Row, SparkSession}
+import org.apache.spark.mllib.evaluation.{BinaryClassificationMetrics, RegressionMetrics}
 
 /**
   * Created by franm on 11/10/2017.
@@ -35,9 +37,10 @@ object NonSupervisedRecommender {
       .getOrCreate()
 
     //preprocesser
-    contentAnalyzer
-    profileLearner
-    filteringComponent
+    //contentAnalyzer
+    //profileLearner
+    //filteringComponent
+    evaluate
   }
 
   def preprocesser ={
@@ -571,6 +574,66 @@ object NonSupervisedRecommender {
     CSVManager.closeCSVWriter(outputCSV)
 
     //todo change ID_RECIPE type to integer when reading csv
+  }
+
+  def evaluate = {
+
+    def normalizeSimilarities(similarities: DataFrame): DataFrame = {
+      def minmaxNormalize(minCurr: Column, maxCurr: Column, minNew: Column, maxNew: Column, value: Column): Column = {
+        ((value - minCurr) / (maxCurr - minCurr)) * (maxNew - minNew) + minNew
+      }
+
+      def floorOrCeil(value: Column): Column = {
+        val interval = ceil(value) - floor(value)
+        when((interval - value).cast(DoubleType) > lit(0.5).cast(DoubleType), floor(value).cast(IntegerType))
+          .otherwise(ceil(value).cast(IntegerType))
+      }
+
+      similarities.cache()
+      val minCurr = lit(0).cast(DoubleType)
+      val maxCurr = lit(1).cast(DoubleType)
+      val minNew = lit(0).cast(DoubleType)
+      val maxNew = lit(5).cast(DoubleType)
+      similarities
+        .withColumn("SCALED_NUT_SIMILARITY", round(minmaxNormalize(minCurr, maxCurr, minNew, maxNew, col("NUT_SIMILARITY")), 4))
+        .withColumn("SCALED_ING_N_SIMILARITY", round(minmaxNormalize(minCurr, maxCurr, minNew, maxNew, col("ING_N_SIMILARITY")), 4))
+        .withColumn("SCALED_ING_WEIGHTED_SIMILARITY", round(minmaxNormalize(minCurr, maxCurr, minNew, maxNew, col("ING_WEIGHTED_SIMILARITY")), 4))
+        .withColumn("SCALED_N_SIMILARITY", round(minmaxNormalize(minCurr, maxCurr, minNew, maxNew, col("N_SIMILARITY")), 4))
+        .withColumn("SCALED_WEIGHTED_SIMILARITY", round(minmaxNormalize(minCurr, maxCurr, minNew, maxNew, col("WEIGHTED_SIMILARITY")), 4))
+        .withColumn("RATING_NUTRITION", floorOrCeil(col("SCALED_NUT_SIMILARITY")))
+        .withColumn("RATING_FREQ_INGREDIENT", floorOrCeil(col("SCALED_ING_N_SIMILARITY")))
+        .withColumn("RATING_WEIGHTED_INGREDIENT", floorOrCeil(col("SCALED_ING_WEIGHTED_SIMILARITY")))
+        .withColumn("RATING_FREQUENCY", floorOrCeil(col("SCALED_N_SIMILARITY")))
+        .withColumn("RATING_WEIGHTED", floorOrCeil(col("SCALED_WEIGHTED_SIMILARITY")))
+    }
+    /*
+    val sim = readCSV(baseOutputPath, "similarities", Some(options), None)
+    val similarities = sim.select(
+      Seq(col("ID_USER"), col("ID_RECIPE")) ++
+        sim.columns.filter(!Seq("ID_USER", "ID_RECIPE").contains(_)).map(col(_).cast(DoubleType)):_*)
+    val scaled_similarities = normalizeSimilarities(similarities)
+    writeCSV(scaled_similarities, baseOutputPath, "scaled", Some(options))
+    */
+    val scaled_similarities = readCSV(baseOutputPath, "scaled", Some(options), None)
+
+    /*
+    val regressionMetrics = new RegressionMetrics(scaled_similarities
+      .select(col("RATING").cast(DoubleType), col("RATING_NUTRITION").cast(DoubleType))
+      .rdd.map(r => (r.getDouble(0), r.getDouble(1))))
+
+    println(s"MSE = ${regressionMetrics.meanSquaredError}")
+    println(s"MAE = ${regressionMetrics.meanAbsoluteError}")
+    println(s"RMSE = ${regressionMetrics.rootMeanSquaredError}")
+    */
+
+    val binaryMetrics = new BinaryClassificationMetrics(scaled_similarities
+      .select(col("RATING").cast(DoubleType), col("RATING_WEIGHTED").cast(DoubleType))
+      .rdd.map(r => (if(r.getDouble(0) < 4) 0 else 1, if(r.getDouble(0) < 4) 0 else 1)))
+
+    val precision = binaryMetrics.precisionByThreshold
+    precision.foreach { case (t, p) =>
+      println(s"Threshold: $t, Precision: $p")
+    }
   }
 
 }
