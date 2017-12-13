@@ -3,10 +3,12 @@ package es.uam.eps.tfm.fmendezlopez.utils
 import java.io.{File, FilenameFilter, PrintWriter}
 
 import org.apache.commons.io.FileUtils
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.mllib.evaluation.{BinaryClassificationMetrics, RegressionMetrics}
+import org.apache.spark.sql.types.{DoubleType, StructType}
 import org.apache.spark.sql._
 import org.apache.spark.sql.functions._
 
+import scala.collection.mutable
 import scala.io.Source
 
 /**
@@ -70,4 +72,103 @@ object SparkUtils {
     }
   }
 
+  object evaluation {
+    def regressionEvaluation(df: DataFrame, col1: String, col2: String): (String, String, String) = {
+      val regressionMetrics = new RegressionMetrics(df
+        .select(
+          col(col1).cast(DoubleType),
+          col(col2).cast(DoubleType))
+        .rdd.map(r => (r.getDouble(0), r.getDouble(1))))
+
+      (
+        f"${regressionMetrics.meanSquaredError}%.3f",
+        f"${regressionMetrics.meanAbsoluteError}%.3f",
+        f"${regressionMetrics.rootMeanSquaredError}%.3f"
+      )
+    }
+
+    def binaryEvaluation(df: DataFrame, col1: String, col2: String, threshold1: Double, threshold2: Double):
+    Seq[String] = {
+      val binaryMetrics = new BinaryClassificationMetrics(df
+        .select(
+          col(col1).cast(DoubleType),
+          col(col2).cast(DoubleType))
+        .rdd.map(r => (if(r.getDouble(0) < threshold1) 0 else 1, if(r.getDouble(1) < threshold2) 0 else 1)))
+
+      val result: Seq[String] =
+        Seq(
+          f"${binaryMetrics.areaUnderPR()}%.3f",
+          f"${binaryMetrics.areaUnderROC()}%.3f") ++
+          binaryMetrics.precisionByThreshold.collect().flatMap(t => Seq(f"${t._2}%.3f")) ++
+          binaryMetrics.recallByThreshold.collect().flatMap(t => Seq(f"${t._2}%.3f")) ++
+          binaryMetrics.fMeasureByThreshold.collect().flatMap(t => Seq(f"${t._2}%.3f")
+          )
+      result
+    }
+
+    def manualEvaluation(df: DataFrame, col1: String, col2: String, threshold1: Double, threshold2: Double): Seq[Double] = {
+      val typed = df
+        .withColumn("type",
+          when(col(col2) >= lit(threshold2), when(col(col1) >= lit(threshold1), lit("TP")).otherwise(lit("FP")))
+            .otherwise(when(col(col1) < lit(threshold1), lit("TN")).otherwise(lit("FN")))
+        )
+
+      val tp = typed.filter("type = 'TP'").count().toFloat
+      val tn = typed.filter("type = 'TN'").count().toFloat
+      val fp = typed.filter("type = 'FP'").count().toFloat
+      val fn = typed.filter("type = 'FN'").count().toFloat
+
+      val ACC = (tp + tn) / (tp + tn + fp + fn)
+      val PPV: Float = tp / (tp + fp)
+      val NPV: Float = tn / (tn + fn)
+      val TPR: Float = tp / (tp + fn)
+      val TNR: Float = tn / (tn + fp)
+      val FPR: Float = fp / (fp + tn)
+      val FNR: Float = fn / (fn + tp)
+
+      Seq(
+        tp,
+        tn,
+        fp,
+        fn,
+        ACC,
+        PPV,
+        NPV,
+        TPR,
+        TNR,
+        FPR,
+        FNR)
+    }
+
+    def precisionAtK(df: DataFrame, userCol: String, recipeCol: String, col1: String, col2: String, values: Seq[Int]): Seq[Float] = {
+      val result: mutable.Seq[Float] = mutable.Seq.fill(values.length)(0)
+      var nusers = 0
+      val users = df.select(userCol).distinct().collect()
+      println(s"number of users: ${users.length}")
+      users.map(row => {
+        val id_user = row.getInt(0)
+        val recipes = df.filter(s"$userCol = $id_user")
+        val sorted1 = recipes.orderBy(desc(col1)).select(recipeCol).collect().map(_.getInt(0))
+        val sorted2 = recipes.orderBy(desc(col2)).select(recipeCol).collect().map(_.getInt(0))
+        var i = 0
+        values.foreach(k => {
+          /*
+          val rank: Seq[(Int, Int)] = zip.take(k).takeWhile({ case (a, b) => a == b })
+          val value = rank.length.toFloat / k.toFloat
+          println(s"value: $value")
+          result(i) += value
+          i += 1
+          */
+          val intersection = sorted1.take(k).intersect(sorted2.take(k))
+          val precision = intersection.length.toFloat / k.toFloat
+          result(i) = result(i) + precision
+          i += 1
+        })
+        nusers += 1
+        println(s"user $nusers")
+        //println(result.mkString(","))
+      })
+      result.map(_ / nusers)
+    }
+  }
 }

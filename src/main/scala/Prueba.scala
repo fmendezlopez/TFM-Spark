@@ -4,6 +4,7 @@ import es.uam.eps.tfm.fmendezlopez.allrecipes.NonSupervisedRecommender
 import es.uam.eps.tfm.fmendezlopez.utils.SparkUtils
 import org.apache.spark.ml.feature.PCA
 import org.apache.spark.ml.linalg.Vectors
+import org.apache.spark.mllib.evaluation.RankingMetrics
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
@@ -21,9 +22,42 @@ object Prueba {
         .master("local[*]")
       .appName("SparkSessionZipsExample")
       .getOrCreate()
-    val seq = Seq((1, 2), (2, 5))
-    val seq1 = Seq(1, 2, 3)
-    println(seq.reduce((a, b) => (a._1 + b._1, a._2 + b._2)))
+
+    val data = spark.sparkContext.parallelize(Seq(
+      Row.fromSeq(Seq(1, 100, 5, 5)),
+      Row.fromSeq(Seq(1, 200, 5, 2)),
+      Row.fromSeq(Seq(1, 300, 3, 5)),
+      Row.fromSeq(Seq(1, 400, 4, 4)),
+      Row.fromSeq(Seq(1, 500, 1, 2)),
+      Row.fromSeq(Seq(2, 100, 5, 5)),
+      Row.fromSeq(Seq(2, 200, 5, 5)),
+      Row.fromSeq(Seq(2, 300, 5, 5)),
+      Row.fromSeq(Seq(2, 400, 5, 4)),
+      Row.fromSeq(Seq(2, 500, 4, 5))
+    ))
+
+    val schema = StructType(Seq(
+      StructField("ID_USER", IntegerType),
+      StructField("ID_RECIPE", IntegerType),
+      StructField("RATING", IntegerType),
+      StructField("PREDICTION", IntegerType)
+    ))
+    val df = spark.sqlContext.createDataFrame(data, schema)
+    df.select("ID_USER").distinct().collect().foreach(row => {
+      val id_user = row.getInt(0)
+      println(s"user: $id_user")
+      val recipes = df.filter(s"ID_USER = $id_user")
+      val sorted1 = recipes.orderBy(desc("RATING")).select("ID_RECIPE").collect().map(_.getInt(0))
+      val sorted2 = recipes.orderBy(desc("PREDICTION")).select("ID_RECIPE").collect().map(_.getInt(0))
+      val zip: Seq[(Int, Int)] = sorted1.zip(sorted2)
+      (1 to 5).foreach(k => {
+        val precision = zip.take(k).takeWhile({case(a, b) => a == b})
+        println(s"Precision@$k: ${precision.length.toFloat / k.toFloat}")
+      })
+    })
+
+    val seq = SparkUtils.evaluation.precisionAtK(df, "ID_USER", "ID_RECIPE", "RATING", "PREDICTION", Seq.range(1, 5))
+    seq.foreach(println)
   }
 
   def pca = {
