@@ -151,7 +151,7 @@ object DifficultyRecommender {
     println(union.stat.corr("COOK_TIME", "#INGREDIENTS"))
     println(union.stat.cov("#STEPS", "#INGREDIENTS"))
     println(union.stat.cov("#STEPS", "COOK_TIME"))
-    println(union.stat.cov("COOK_TIME", "#INGREDIENTS")) 
+    println(union.stat.cov("COOK_TIME", "#INGREDIENTS"))
     //learnModel(union)
   }
 }
