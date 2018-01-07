@@ -34,29 +34,27 @@ object PropagationRecommender extends Logging{
       .appName("Allrecipes Recommender")
       .getOrCreate()
 
-    //contentAnalyzer
-    //profileLearner
-    //filteringComponent
+    contentAnalyzer
+    profileLearner
+    filteringComponent(5000)
     evaluate
   }
 
   def contentAnalyzer = {
     object sampling{
-      def percentSampling(user_recipe: DataFrame, minReviews: Int) = {
+      def percentSampling(user_recipe: DataFrame, minReviews: Int): (DataFrame, DataFrame) = {
         val user_reviews = user_recipe.filter("RECIPE_TYPE = 'review'")
         val grouped = user_reviews.groupBy("ID_USER").count()
-        grouped.cache().count()
         val total_users = grouped.count
         logger.info(s"Total users: ${total_users}")
-        val valid_users = grouped.filter(s"count >= $minReviews").sample(false, 0.1, System.currentTimeMillis())
+        val valid_users = grouped.filter(s"count >= $minReviews")//.sample(false, 0.1, System.currentTimeMillis())
         logger.info(s"Discarded users: ${total_users - valid_users.count}")
-        valid_users.cache()
         val valid_user_reviews = user_reviews.join(valid_users, "ID_USER").select(user_reviews.columns.map(user_reviews(_)):_*)
         valid_user_reviews.cache().count()
         var i = 0
-        valid_users.collect().flatMap(row => {
+        val ret = valid_users.collect().flatMap(row => {
           val userID = row.getInt(0)
-          val this_user_reviews = valid_user_reviews.filter(s"ID_USER = ${userID}").select(col("ID_USER").as("USER"), col("ID_RECIPE").as("RECIPE"))
+          val this_user_reviews = valid_user_reviews.filter(s"ID_USER = ${userID}").select(col("ID_USER").as("USER"), col("ID_RECIPE").as("RECIPE")).cache()
           val ratio: Double = DEFAULT_TRAINING_SIZE
           val training: DataFrame = this_user_reviews
             .sample(false, ratio, System.currentTimeMillis())
@@ -71,15 +69,18 @@ object PropagationRecommender extends Logging{
           logger.debug(s"Total size: ${this_user_reviews.count()}")
           i += 1
           logger.info(s"Processed $i users")
+          this_user_reviews.unpersist()
           Seq((training, test))
         }).reduce((a, b) => (a._1 union b._1, a._2 union b._2))
+        valid_user_reviews.unpersist()
+        ret
       }
     }
 
     val user_recipes = readCSV(baseInputPath, "user-recipe", Some(options), None)
       .withColumn("ID_USER", col("ID_USER").cast(IntegerType))
 
-    val (trainingSet, testSet) = sampling.percentSampling(user_recipes, 100)
+    val (trainingSet, testSet) = sampling.percentSampling(user_recipes, 10)
 
     val reviews = readCSV(baseInputPath, "reviews", Some(options), None)
       .withColumnRenamed("ID_AUTHOR", "ID_USER")
@@ -121,8 +122,12 @@ object PropagationRecommender extends Logging{
     writeCSV(propagated, baseOutputPath, "propagated", Some(options))
   }
 
-  def filteringComponent = {
-    val test = readCSV(baseOutputPath, "test", Some(options), None)
+  def filteringComponent(nRatings: Int = 0) = {
+    val testSet = readCSV(baseOutputPath, "test", Some(options), None)
+    val count = testSet.count()
+    val nrows = nRatings.toLong.min(count)
+    val ratio: Float = nrows.toFloat / count.toFloat
+    val test = testSet.sample(false, ratio, System.currentTimeMillis())
     val ingredients = readCSV(baseInputPath, "ingredients", Some(options), None)
     val propagated = readCSV(baseOutputPath, "propagated", Some(options), None)
       .select(col("ID_USER"), col("ID_INGREDIENT"), col("INGR_RATING").cast(DoubleType))
