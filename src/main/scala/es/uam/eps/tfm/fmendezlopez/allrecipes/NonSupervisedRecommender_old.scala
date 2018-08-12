@@ -2,16 +2,19 @@ package es.uam.eps.tfm.fmendezlopez.allrecipes
 
 import java.io.File
 
-import es.uam.eps.tfm.fmendezlopez.utils.SparkUtils._
+import com.github.tototoshi.csv.CSVWriter
 import es.uam.eps.tfm.fmendezlopez.utils.{CSVManager, SparkUtils}
+import es.uam.eps.tfm.fmendezlopez.utils.SparkUtils._
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{Column, DataFrame, Row, SparkSession}
+import org.apache.spark.mllib.evaluation.{BinaryClassificationMetrics, RankingMetrics, RegressionMetrics}
+import org.apache.spark.rdd.RDD
 
 /**
   * Created by franm on 11/10/2017.
   */
-object NonSupervisedRecommender {
+object NonSupervisedRecommender_old {
 
   private var spark : SparkSession = _
   private lazy val DEFAULT_TRAINING_SIZE = 0.7f
@@ -23,8 +26,8 @@ object NonSupervisedRecommender {
     "header" -> "true"
   )
   val baseOutputPath = "./src/main/resources/output/recommendation/allrecipes/nonsupervised"
-  val baseInputPath = "./src/main/resources/input/upgraded_dataset"
-  val datasetPath = s"${baseOutputPath}${File.separator}filtered"
+  val baseInputPath = "./src/main/resources/output/recommendation/allrecipes/preprocessing"
+  val datasetPath = s"${baseOutputPath}${File.separator}preprocessed"
   val trainingPath = s"${baseOutputPath}${File.separator}training"
   val testPath = s"${baseOutputPath}${File.separator}test"
 
@@ -32,13 +35,13 @@ object NonSupervisedRecommender {
     spark = SparkSession
       .builder()
       .master("local[*]")
-      .appName("Allrecipes Nonsupervised Recommender")
+      .appName("Allrecipes Recommender")
       .getOrCreate()
 
-    contentAnalyzer
-    profileLearner
-    filteringComponent(100)
-    //evaluate
+    //contentAnalyzer
+    //profileLearner
+    //filteringComponent
+    evaluate
   }
 
     /*Rename example*/
@@ -61,20 +64,20 @@ object NonSupervisedRecommender {
   def contentAnalyzer = {
     def getValidRecipes(recipes: DataFrame, ingredients: DataFrame, nutrition: DataFrame) : DataFrame = {
       println(s"Recipes size 1: ${recipes.count()}")
-      val nutr_ing = ingredients/*.select(col("RECIPE_ID").as("RECIPE"))*/
-        .join(nutrition, "RECIPE_ID")
-        .select(col("RECIPE_ID").as("RECIPE")).distinct()
+      val nutr_ing = ingredients/*.select(col("ID_RECIPE").as("RECIPE"))*/
+        .join(nutrition, "ID_RECIPE")
+        .select(col("ID_RECIPE").as("RECIPE")).distinct()
       val valid = recipes
-        .join(nutr_ing, recipes("RECIPE_ID") === nutr_ing("RECIPE"), "left")
+        .join(nutr_ing, recipes("ID_RECIPE") === nutr_ing("RECIPE"), "left")
         .filter("RECIPE IS NOT NULL")
-        .select(col("RECIPE").as("RECIPE_ID")).distinct()
+        .select(col("RECIPE").as("ID_RECIPE")).distinct()
       println(s"Valid: ${valid.count}")
       val invalid_nutrition = nutrition.filter(col("CALORIES") === lit(0).cast(FloatType))
-        .select(col("RECIPE_ID").as("RECIPE")).distinct()
+        .select(col("ID_RECIPE").as("RECIPE")).distinct()
       println(s"Invalid by nutrition: ${invalid_nutrition.count()}")
-      val result = valid.join(invalid_nutrition, valid("RECIPE_ID") === invalid_nutrition("RECIPE"), "left")
+      val result = valid.join(invalid_nutrition, valid("ID_RECIPE") === invalid_nutrition("RECIPE"), "left")
         .filter("RECIPE IS NULL")
-        .select(col("RECIPE_ID"))
+        .select(col("ID_RECIPE"))
       println(s"Recipes size 2: ${result.count()}")
       result
     }
@@ -82,7 +85,7 @@ object NonSupervisedRecommender {
     def filterDataset(valid_recipes: DataFrame, dfs: Seq[DataFrame]): Seq[DataFrame] = {
       dfs.map(df => {
         println(s"Initial size: ${df.count()}")
-        val result = df.join(valid_recipes, "RECIPE_ID")
+        val result = df.join(valid_recipes, "ID_RECIPE")
           .select(df.columns.map(df(_)):_*)
         println(s"Final size: ${result.count()}")
         result
@@ -97,16 +100,25 @@ object NonSupervisedRecommender {
         .drop("RECIPE_TYPE")
     }
 
+    /*
+    def filterUserRecipes(valid_user_recipes: DataFrame): DataFrame = {
+      val recipes = valid_user_recipes.filter("type = 'recipes'")
+      val reviews = valid_user_recipes.filter("type = 'reviews'")
+      val invalid = recipes.join(reviews, recipes("ID_RECIPE") === reviews("ID_RECIPE") && recipes("ID_USER") === reviews("ID_USER"))
+        .select(recipes("ID_RECIPE"), recipes("ID_USER"))
+      valid_user_recipes.join(invalid, valid_user_recipes("ID_RECIPE") === invalid("ID_RECIPE") && valid_user_recipes("ID_USER") === invalid("ID_USER"), "left")
+        .filter(invalid("ID_RECIPE").isNotNull)
+    }
+    */
+
     def getStats(user_recipes_agg: DataFrame): DataFrame = {
-      val df1 = user_recipes_agg
-        .groupBy("USER_ID")
+      user_recipes_agg
+        .groupBy("ID_USER")
         .pivot("type", Seq("reviews", "recipes"))
         .count()
-      val df2 = df1
-        .withColumn("total_recipes", coalesce(col("recipes"), lit(0)))
+        .withColumn("total_recipes", col("recipes"))
         .withColumn("total_reviews", coalesce(col("reviews"), lit(0)))
         .drop("reviews", "recipes", "type")
-      df2
     }
 
     /*EDA function*/
@@ -125,12 +137,10 @@ object NonSupervisedRecommender {
     }
 
     object sampling{
-      def recipesAndReviewsPercent(
-                                    stats: DataFrame, user_recipes: DataFrame, configuration: Map[String, Any],
-                                    minReviews: Int, minRecipes: Int): (DataFrame, DataFrame) = {
+      def recipesAndReviewsPercent(stats: DataFrame, user_recipes: DataFrame, configuration: Map[String, Any], minReviews: Int): (DataFrame, DataFrame) = {
         def filter(statsDF: DataFrame, df: DataFrame, ratioColumn: String): DataFrame = {
           statsDF.collect().flatMap(row => {
-            val df1 = df.filter(df("USER_ID") === lit(row.getInt(0)))
+            val df1 = df.filter(df("ID_USER") === lit(row.getInt(0)))
             val ratio = row.getAs[Double](ratioColumn)
             if(ratio == 0.toDouble) {
               println(s"ratio is ${ratio}")
@@ -141,8 +151,8 @@ object NonSupervisedRecommender {
           }).reduce(_ union _)
         }
         println(s"Total users: ${stats.count()}")
-        val valid_stats = stats.filter(s"total_reviews >= ${minReviews} AND total_recipes >= $minRecipes")
-        println(s"Users with more than ${minReviews} reviews and more than $minRecipes recipes: ${valid_stats.count()}")
+        val valid_stats = stats.filter(s"total_reviews >= ${minReviews}")
+        println(s"Users with more than ${minReviews} reviews: ${valid_stats.count()}")
 
         val trainingRatio = configuration.getOrElse("training", DEFAULT_TRAINING_SIZE)
         val testRatio = configuration.getOrElse("test", DEFAULT_TEST_SIZE)
@@ -174,23 +184,13 @@ object NonSupervisedRecommender {
         (trainingSet, testSet)
       }
 
-      def recipesAndReviews(
-                             stats: DataFrame, user_recipes: DataFrame, configuration: Map[String, Any],
-                             minReviews: Int, minRecipes: Int): (DataFrame, DataFrame) = {
+      def recipesAndReviews(stats: DataFrame, user_recipes: DataFrame, configuration: Map[String, Any], minReviews: Int): (DataFrame, DataFrame) = {
         println(s"Total users: ${stats.count()}")
-        val valid_users = stats
-          .filter(s"total_reviews >= ${minReviews} AND total_recipes >= $minRecipes")
-          .select(col("USER_ID").as("USER"))
-        println(s"Users with more than ${minReviews} reviews and more than $minRecipes recipes: ${valid_users.count()}")
+        val valid_stats = stats.filter(s"total_reviews >= ${minReviews} AND total_recipes >= total_reviews")
+        println(s"Users with more than ${minReviews} reviews: ${valid_stats.count()}")
 
-        val valid_user_recipes = user_recipes
-          .join(valid_users, user_recipes("USER_ID") === valid_users("USER"))
-          .select(user_recipes.columns.map(col) :_*)
-
-        val trainingSet = valid_user_recipes
-          .filter("type = 'recipes'")
-        val testSet = valid_user_recipes
-          .filter("type = 'reviews'")
+        val trainingSet = user_recipes.filter("type = 'recipes'").select("ID_RECIPE").distinct()
+        val testSet = user_recipes.filter("type = 'reviews'").select("ID_RECIPE").distinct()
         println(s"Training set size: ${trainingSet.count()}")
         println(s"Test set size: ${testSet.count()}")
         //trainingSet.show()
@@ -213,124 +213,124 @@ object NonSupervisedRecommender {
         .drop("count")
     }
 
-    /*
+
     lazy val recipes = SparkUtils.readCSV(baseInputPath, "recipes", Some(options), None)
     val nutr = SparkUtils.readCSV(baseInputPath, "nutrition", Some(options), None)
     lazy val nutrition = nutr.select(
-      Seq(nutr("RECIPE_ID")) ++
-        nutr.columns.filterNot(_ == "RECIPE_ID").map(col(_).cast(FloatType)):_*
+      Seq(nutr("ID_RECIPE")) ++
+        nutr.columns.filterNot(_ == "ID_RECIPE").map(col(_).cast(FloatType)):_*
     )
     lazy val ingredients = SparkUtils.readCSV(baseInputPath, "ingredients", Some(options), None)
       .withColumn("ID_INGREDIENT", col("ID_INGREDIENT").cast(IntegerType))
     lazy val user_recipes = SparkUtils.readCSV(baseInputPath, "user-recipe", Some(options), None)
-      .withColumn("USER_ID", col("USER_ID").cast(IntegerType))
+      .withColumn("ID_USER", col("ID_USER").cast(IntegerType))
     lazy val reviews = SparkUtils.readCSV(baseInputPath, "reviews", Some(options), None)
+    lazy val steps = SparkUtils.readCSV(baseInputPath, "steps", Some(options), None)
 
     /*Preprocessing*/
-    val valid_recipes = getValidRecipes(recipes.select("RECIPE_ID"), ingredients, nutrition)
+    val valid_recipes = getValidRecipes(recipes.select("ID_RECIPE"), ingredients, nutrition)
     val validated = filterDataset(valid_recipes, Seq(
       recipes,
       nutrition,
       ingredients,
       user_recipes,
-      reviews
+      reviews,
+      steps
     ))
     SparkUtils.writeCSV(validated(0), datasetPath, "recipes", Some(options))
     SparkUtils.writeCSV(validated(1), datasetPath, "nutrition", Some(options))
     SparkUtils.writeCSV(validated(2), datasetPath, "ingredients", Some(options))
     SparkUtils.writeCSV(validated(3), datasetPath, "user-recipe", Some(options))
     SparkUtils.writeCSV(validated(4), datasetPath, "reviews", Some(options))
+    SparkUtils.writeCSV(validated(5), datasetPath, "steps", Some(options))
 
     val valid_user_recipes = validated(3)
     val valid_user_recipes_agg = getAggValidUserRecipes(valid_user_recipes)
     SparkUtils.writeCSV(valid_user_recipes_agg, baseOutputPath, "valid_user_recipes_agg", Some(options))
 
     /*Compute ingredients vector*/
-    val idf = computeIDF(validated.head, validated(2))
+    //val idf = computeIDF(validated(2))
+    val idf = computeIDF(SparkUtils.readCSV(datasetPath, "recipes", Some(options), None), SparkUtils.readCSV(datasetPath, "ingredients", Some(options), None))
     SparkUtils.writeCSV(idf, baseOutputPath, "idf", Some(options))
-*/
-    val userSchema = StructType(Seq(
-      StructField("RECIPE_ID", IntegerType),
-      StructField("USER_ID", IntegerType),
-      StructField("type", StringType)
-    ))
-    val valid_user_recipes_agg = SparkUtils.readCSV(baseOutputPath, "valid_user_recipes_agg", Some(options), Some(userSchema))
 
-    //val valid_user_recipes_agg = spark.sqlContext.createDataFrame(data, schema)
     /*Sampling*/
-    //val stats = getStats(valid_user_recipes_agg)
-    //SparkUtils.writeCSV(stats, baseOutputPath, "stats", Some(options))
+    val stats = getStats(valid_user_recipes_agg)
+    SparkUtils.writeCSV(stats, baseOutputPath, "stats", Some(options))
 
     //val idf = SparkUtils.readCSV(baseOutputPath, "idf", Some(options), None)
 
     val statsSchema = StructType(Seq(
-      StructField("USER_ID", IntegerType),
+      StructField("ID_USER", IntegerType),
       StructField("total_recipes", IntegerType),
       StructField("total_reviews", IntegerType)
     ))
+    val userSchema = StructType(Seq(
+      StructField("ID_RECIPE", IntegerType),
+      StructField("ID_USER", IntegerType),
+      StructField("type", StringType)
+    ))
 
-
-    val stats = SparkUtils.readCSV(baseOutputPath, "stats", Some(options), Some(statsSchema))
+    //val stats = SparkUtils.readCSV(baseOutputPath, "stats", Some(options), Some(statsSchema))
     //val valid_user_recipes_agg = SparkUtils.readCSV(baseOutputPath, "valid_user_recipes_agg", Some(options), Some(userSchema))
-    val (training, test) = sampling.recipesAndReviews(stats, valid_user_recipes_agg, Map(), 10, 30)
+    val (training, test) = sampling.recipesAndReviews(stats, valid_user_recipes_agg, Map(), 0)
     val recipesTraining = SparkUtils.readCSV(datasetPath, "recipes", Some(options), None)
     val nutritionTraining = SparkUtils.readCSV(datasetPath, "nutrition", Some(options), None)
     val ingredientsTraining = SparkUtils.readCSV(datasetPath, "ingredients", Some(options), None)
     val user_recipesTraining = SparkUtils.readCSV(datasetPath, "user-recipe", Some(options), None)
-    val trainingDataset = filterDataset(training.select("RECIPE_ID"), Seq(
+    val reviewsTraining = SparkUtils.readCSV(datasetPath, "reviews", Some(options), None)
+    val stepsTraining = SparkUtils.readCSV(datasetPath, "steps", Some(options), None)
+    val trainingDataset = filterDataset(training.select("ID_RECIPE"), Seq(
       recipesTraining,
       nutritionTraining,
-      ingredientsTraining
+      ingredientsTraining,
+      user_recipesTraining,
+      reviewsTraining,
+      stepsTraining
     ))
-    val user_recipesTrain = user_recipesTraining
-      .join(training, user_recipesTraining("RECIPE_ID") === training("RECIPE_ID") &&
-        user_recipesTraining("USER_ID") === training("USER_ID"))
-      .select(user_recipesTraining.columns.map(user_recipesTraining(_)) :_*)
-    SparkUtils.writeCSV(trainingDataset(0).dropDuplicates("RECIPE_ID"), trainingPath, "recipes", Some(options))
-    SparkUtils.writeCSV(trainingDataset(1).dropDuplicates("RECIPE_ID"), trainingPath, "nutrition", Some(options))
-    SparkUtils.writeCSV(trainingDataset(2).dropDuplicates("RECIPE_ID", "ID_INGREDIENT"), trainingPath, "ingredients", Some(options))
-    SparkUtils.writeCSV(user_recipesTrain
-      .drop("RECIPE_TYPE")
-      .dropDuplicates(Seq("RECIPE_ID", "USER_ID")), trainingPath, "user-recipe", Some(options))
+    SparkUtils.writeCSV(trainingDataset(0), trainingPath, "recipes", Some(options))
+    SparkUtils.writeCSV(trainingDataset(1), trainingPath, "nutrition", Some(options))
+    SparkUtils.writeCSV(trainingDataset(2), trainingPath, "ingredients", Some(options))
+    SparkUtils.writeCSV(trainingDataset(3), trainingPath, "user-recipe", Some(options))
+    SparkUtils.writeCSV(trainingDataset(4), trainingPath, "reviews", Some(options))
+    SparkUtils.writeCSV(trainingDataset(5), trainingPath, "steps", Some(options))
 
     val recipesTest = SparkUtils.readCSV(datasetPath, "recipes", Some(options), None)
     val nutritionTest = SparkUtils.readCSV(datasetPath, "nutrition", Some(options), None)
     val ingredientsTest = SparkUtils.readCSV(datasetPath, "ingredients", Some(options), None)
     val user_recipesTest = SparkUtils.readCSV(datasetPath, "user-recipe", Some(options), None)
     val reviewsTest = SparkUtils.readCSV(datasetPath, "reviews", Some(options), None)
-    val testDataset = filterDataset(test.select("RECIPE_ID"), Seq(
+    val stepsTest = SparkUtils.readCSV(datasetPath, "steps", Some(options), None)
+    val testDataset = filterDataset(test.select("ID_RECIPE"), Seq(
       recipesTest,
       nutritionTest,
       ingredientsTest,
-      reviewsTest
+      user_recipesTest,
+      reviewsTest,
+      stepsTest
     ))
-    val user_recipesTes = user_recipesTest
-      .join(training, user_recipesTest("RECIPE_ID") === training("RECIPE_ID") &&
-        user_recipesTest("USER_ID") === training("USER_ID"))
-      .select(user_recipesTest.columns.map(user_recipesTest(_)) :_*)
-    SparkUtils.writeCSV(testDataset(0).dropDuplicates("RECIPE_ID"), testPath, "recipes", Some(options))
-    SparkUtils.writeCSV(testDataset(1).dropDuplicates("RECIPE_ID"), testPath, "nutrition", Some(options))
-    SparkUtils.writeCSV(testDataset(2).dropDuplicates("RECIPE_ID", "ID_INGREDIENT"), testPath, "ingredients", Some(options))
-    SparkUtils.writeCSV(user_recipesTes
-      .drop("RECIPE_TYPE")
-      .dropDuplicates(Seq("RECIPE_ID", "USER_ID")), testPath, "user-recipe", Some(options))
-    SparkUtils.writeCSV(testDataset(3).dropDuplicates("RECIPE_ID", "ID"), testPath, "reviews", Some(options))
+    SparkUtils.writeCSV(testDataset(0), testPath, "recipes", Some(options))
+    SparkUtils.writeCSV(testDataset(1), testPath, "nutrition", Some(options))
+    SparkUtils.writeCSV(testDataset(2), testPath, "ingredients", Some(options))
+    SparkUtils.writeCSV(testDataset(2), testPath, "ingredients", Some(options))
+    SparkUtils.writeCSV(testDataset(3).drop("RECIPE_TYPE").dropDuplicates(Seq("ID_RECIPE", "ID_USER")), testPath, "user-recipe", Some(options))
+    SparkUtils.writeCSV(testDataset(4), testPath, "reviews", Some(options))
+    SparkUtils.writeCSV(testDataset(5), testPath, "steps", Some(options))
   }
 
   def profileLearner{
     def computeNutritionSum(user_recipe: DataFrame, nutrition: DataFrame): DataFrame = {
-      val nutrition_as1 = nutrition.withColumnRenamed("RECIPE_ID", "RECIPE")
-      val user_nutrition = user_recipe.join(nutrition_as1, user_recipe("RECIPE_ID") === nutrition_as1("RECIPE"))
+      val nutrition_as1 = nutrition.withColumnRenamed("ID_RECIPE", "RECIPE")
+      val user_nutrition = user_recipe.join(nutrition_as1, user_recipe("ID_RECIPE") === nutrition_as1("RECIPE"))
         .select(
           (Seq(
-            user_recipe("USER_ID"),
-            user_recipe("RECIPE_ID")
+            user_recipe("ID_USER"),
+            user_recipe("ID_RECIPE")
           ) ++ nutrition_as1.columns.filterNot(_ == "RECIPE").map(col(_))):_*
         )
-      val agg = user_nutrition.groupBy("USER_ID").sum(user_nutrition.columns.filterNot(Seq("RECIPE_ID", "USER_ID") contains _):_*)
+      val agg = user_nutrition.groupBy("ID_USER").sum(user_nutrition.columns.filterNot(Seq("ID_RECIPE", "ID_USER") contains _):_*)
       agg
         .select((agg.columns.map(name =>{
-          if(name != "USER_ID")
+          if(name != "ID_USER")
             col(name).as(name.substring(name.indexOf('(') + 1, name.indexOf(')')))
           else
             col(name)
@@ -339,18 +339,18 @@ object NonSupervisedRecommender {
     }
 
     def computeNutritionAvg(user_recipe: DataFrame, nutrition: DataFrame): DataFrame = {
-      val nutrition_as1 = nutrition.withColumnRenamed("RECIPE_ID", "RECIPE")
-      val user_nutrition = user_recipe.join(nutrition_as1, user_recipe("RECIPE_ID") === nutrition_as1("RECIPE"))
+      val nutrition_as1 = nutrition.withColumnRenamed("ID_RECIPE", "RECIPE")
+      val user_nutrition = user_recipe.join(nutrition_as1, user_recipe("ID_RECIPE") === nutrition_as1("RECIPE"))
         .select(
           (Seq(
-            user_recipe("USER_ID"),
-            user_recipe("RECIPE_ID")
+            user_recipe("ID_USER"),
+            user_recipe("ID_RECIPE")
           ) ++ nutrition_as1.columns.filterNot(_ == "RECIPE").map(col(_))):_*
         )
-      val agg = user_nutrition.groupBy("USER_ID").avg(user_nutrition.columns.filterNot(Seq("RECIPE_ID", "USER_ID") contains _):_*)
+      val agg = user_nutrition.groupBy("ID_USER").avg(user_nutrition.columns.filterNot(Seq("ID_RECIPE", "ID_USER") contains _):_*)
       agg
         .select((agg.columns.map(name =>{
-          if(name != "USER_ID")
+          if(name != "ID_USER")
             round(col(name), 3).as(name.substring(name.indexOf('(') + 1, name.indexOf(')')))
           else
             col(name)
@@ -360,13 +360,13 @@ object NonSupervisedRecommender {
 
     def computeIngredients(user_recipe: DataFrame, ingredients: DataFrame, idf: DataFrame): DataFrame = {
       val ingredients_as1 = ingredients.select(
-        ingredients.columns.filterNot(_ == "RECIPE_ID").map(col(_))
-          :+ col("RECIPE_ID").as("RECIPE"):_*)
-      val user_ingredients = user_recipe.join(ingredients_as1, user_recipe("RECIPE_ID") === ingredients_as1("RECIPE"))
-      user_ingredients.groupBy("USER_ID", "ID_INGREDIENT").count().withColumnRenamed("count", "N")
+        ingredients.columns.filterNot(_ == "ID_RECIPE").map(col(_))
+          :+ col("ID_RECIPE").as("RECIPE"):_*)
+      val user_ingredients = user_recipe.join(ingredients_as1, user_recipe("ID_RECIPE") === ingredients_as1("RECIPE"))
+      user_ingredients.groupBy("ID_USER", "ID_INGREDIENT").count().withColumnRenamed("count", "N")
         .join(idf, "ID_INGREDIENT")
         .select(
-          col("USER_ID"),
+          col("ID_USER"),
           col("ID_INGREDIENT"),
           col("N"),
           round((col("N") * col("IDF")), 4).as("WEIGHTED-N").cast(FloatType)
@@ -374,7 +374,7 @@ object NonSupervisedRecommender {
     }
 
     val nutrSchema = StructType(Seq(
-      StructField("RECIPE_ID", StringType),
+      StructField("ID_RECIPE", StringType),
       StructField("CALCIUM", FloatType),
       StructField("CALORIES", FloatType),
       StructField("CALORIESFROMFAT", FloatType),
@@ -397,13 +397,15 @@ object NonSupervisedRecommender {
       StructField("VITAMINC", FloatType)
     ))
     val userSchema = StructType(Seq(
-      StructField("RECIPE_ID", IntegerType),
-      StructField("USER_ID", IntegerType)
+      StructField("RECIPE_TYPE", StringType),
+      StructField("ID_RECIPE", IntegerType),
+      StructField("ID_USER", IntegerType)
     ))
     val nutr = SparkUtils.readCSV(trainingPath, "nutrition", Some(options), None)
-    val nutrition = nutr.select(Seq(nutr("RECIPE_ID")) ++
-      nutr.columns.filterNot(_ == "RECIPE_ID").map(col(_).cast(FloatType)):_*)
+    val nutrition = nutr.select(Seq(nutr("ID_RECIPE")) ++
+      nutr.columns.filterNot(_ == "ID_RECIPE").map(col(_).cast(FloatType)):_*)
     val user_recipe = SparkUtils.readCSV(trainingPath, "user-recipe", Some(options), Some(userSchema))
+      .drop("RECIPE_TYPE")
     val ingredients = SparkUtils.readCSV(trainingPath, "ingredients", Some(options), None)
     val nutritionByUserAvg = computeNutritionAvg(user_recipe, nutrition)
     val nutritionByUserSum = computeNutritionSum(user_recipe, nutrition)
@@ -416,7 +418,7 @@ object NonSupervisedRecommender {
 
   def filteringComponent(threshold: Int) = {
     val nutrSchema = StructType(Seq(
-      StructField("RECIPE_ID", StringType),
+      StructField("ID_RECIPE", StringType),
       StructField("CALCIUM", DoubleType),
       StructField("CALORIES", DoubleType),
       StructField("CALORIESFROMFAT", DoubleType),
@@ -439,18 +441,18 @@ object NonSupervisedRecommender {
       StructField("VITAMINC", DoubleType)
     ))
     val ingSchema = StructType(Seq(
-      StructField("USER_ID", IntegerType),
+      StructField("ID_USER", IntegerType),
       StructField("ID_INGREDIENT", IntegerType),
       StructField("N", DoubleType),
       StructField("WEIGHTED-N", DoubleType)
     ))
     val userSchema = StructType(Seq(
-      StructField("RECIPE_ID", IntegerType),
-      StructField("USER_ID", IntegerType)
+      StructField("ID_RECIPE", IntegerType),
+      StructField("ID_USER", IntegerType)
     ))
 
     def nutritionSimilarity(profile: Row, nutrition: Row): Double = {
-      SparkUtils.sql.cosine(profile, nutrition, nutrition.schema.fields.map(_.name).filterNot(Seq("RECIPE_ID", "USER_ID") contains _))
+      SparkUtils.sql.cosine(profile, nutrition, nutrition.schema.fields.map(_.name).filterNot(Seq("ID_RECIPE", "ID_USER") contains _))
     }
 
     def ingredientsSimilarity(profile: DataFrame, ingredients: DataFrame, usingCol: String): Double = {
@@ -466,23 +468,24 @@ object NonSupervisedRecommender {
       numerator / denominator
     }
 
+    val recipes = SparkUtils.readCSV(testPath, "recipes", Some(options), None)
     val user_recipe = SparkUtils.readCSV(testPath, "user-recipe", Some(options), Some(userSchema))
     val ingredients = SparkUtils.readCSV(testPath, "ingredients", Some(options), None)
     val nutr = SparkUtils.readCSV(testPath, "nutrition", Some(options), None)
-    val nutrition = nutr.select(Seq(nutr("RECIPE_ID").cast(IntegerType)) ++
-      nutr.columns.filterNot(_ == "RECIPE_ID").map(col(_).cast(DoubleType)):_*)
+    val nutrition = nutr.select(Seq(nutr("ID_RECIPE").cast(IntegerType)) ++
+      nutr.columns.filterNot(_ == "ID_RECIPE").map(col(_).cast(DoubleType)):_*)
     val reviews = SparkUtils.readCSV(testPath, "reviews", Some(options), None)
     val nagg = SparkUtils.readCSV(baseOutputPath, "nutrition_profile_avg", Some(options), None)
-    val nutrition_agg = nagg.select(Seq(nagg("USER_ID").cast(IntegerType)) ++
-      nagg.columns.filterNot(_ == "USER_ID").map(col(_).cast(DoubleType)):_*)
+    val nutrition_agg = nagg.select(Seq(nagg("ID_USER").cast(IntegerType)) ++
+      nagg.columns.filterNot(_ == "ID_USER").map(col(_).cast(DoubleType)):_*)
     val ingredients_agg = SparkUtils.readCSV(baseOutputPath, "ingredients_profile", Some(options), Some(ingSchema))
     val testWithRating = reviews
-      .select(col("RECIPE_ID").cast(IntegerType), col("USER_ID").cast(IntegerType).as("USER_ID"), col("RATING").cast(IntegerType))
+      .select(col("ID_RECIPE").cast(IntegerType), col("ID_AUTHOR").cast(IntegerType).as("ID_USER"), col("RATING").cast(IntegerType))
 
     val outputCSV = CSVManager.openCSVWriter(baseOutputPath, "similarities.csv", options("sep").charAt(0))
     outputCSV.writeRow(Seq(
-      "USER_ID",
-      "RECIPE_ID",
+      "ID_USER",
+      "ID_RECIPE",
       "RATING",
       "NUT_SIMILARITY",
       "ING_N_SIMILARITY",
@@ -496,33 +499,33 @@ object NonSupervisedRecommender {
     println(ingredients.count())
     println(reviews.count())
     println(user_recipe.count())
-    println(recipes.join(nutrition, "RECIPE_ID").count())
-    println(reviews.join(nutrition, "RECIPE_ID").count())
-    println(ingredients.join(nutrition, "RECIPE_ID").count())
-    println(recipes.join(reviews, "RECIPE_ID").count())
-    println(recipes.join(user_recipe, "RECIPE_ID").count())
+    println(recipes.join(nutrition, "ID_RECIPE").count())
+    println(reviews.join(nutrition, "ID_RECIPE").count())
+    println(ingredients.join(nutrition, "ID_RECIPE").count())
+    println(recipes.join(reviews, "ID_RECIPE").count())
+    println(recipes.join(user_recipe, "ID_RECIPE").count())
     */
 
-    val users = user_recipe.select("USER_ID").distinct().cache().collect().iterator
+    val users = user_recipe.select("ID_USER").distinct().cache().collect().iterator
     var continue = true
     var recommendations = 0
     do{
       val rowUser = users.next()
       val userID = rowUser.getInt(0)
       println(s"User: ${userID}")
-      val recipesDF = testWithRating.filter(s"USER_ID = ${userID}").select("RECIPE_ID", "RATING")
-      val userNutrition = nutrition_agg.filter(s"USER_ID = ${userID}").head
-      val userIngredients = ingredients_agg.filter(s"USER_ID = ${userID}")
+      val recipesDF = testWithRating.filter(s"ID_USER = ${userID}").select("ID_RECIPE", "RATING")
+      val userNutrition = nutrition_agg.filter(s"ID_USER = ${userID}").head
+      val userIngredients = ingredients_agg.filter(s"ID_USER = ${userID}")
 
       /*
       val similarities: Seq[(String, String, String, String)] = recipesDF.collect().flatMap(rowRecipe => {
         val recipeID = rowRecipe.getInt(0)
         val rating = rowRecipe.getInt(1)
-        val recipeNutr = nutrition.filter(s"RECIPE_ID = '${recipeID}'").head()
+        val recipeNutr = nutrition.filter(s"ID_RECIPE = '${recipeID}'").head()
         val nutrSimilarity: Float = nutritionSimilarity(userNutrition, recipeNutr)
         Map(recipeID -> nutrSimilarity)
 
-        val recipeIng = ingredients.filter(s"RECIPE_ID = '${recipeID}'")
+        val recipeIng = ingredients.filter(s"ID_RECIPE = '${recipeID}'")
         val ingSimilarity: Float = ingredientsSimilarity(userIngredients, recipeIng)
         Seq((userID.toString, recipeID.toString, rating.toString, ((ingSimilarity + nutrSimilarity) / 2).formatted(".2f")))
       })
@@ -534,10 +537,10 @@ object NonSupervisedRecommender {
         val rating = rowRecipe.getInt(1)
         println(s"Recipe: ${recipeID}")
 
-        val recipeNutr = nutrition.filter(s"RECIPE_ID = ${recipeID}")
+        val recipeNutr = nutrition.filter(s"ID_RECIPE = ${recipeID}")
         val nutrSimilarity: Double = if(recipeNutr.count() == 0) 0.0f else nutritionSimilarity(userNutrition, recipeNutr.head())
 
-        val recipeIng = ingredients.filter(s"RECIPE_ID = ${recipeID}")
+        val recipeIng = ingredients.filter(s"ID_RECIPE = ${recipeID}")
         val ingSimilarity1: Double = if(recipeIng.count() == 0) 0.0f else ingredientsSimilarity(userIngredients, recipeIng, "WEIGHTED-N")
         val ingSimilarity2: Double = if(recipeIng.count() == 0) 0.0f else ingredientsSimilarity(userIngredients, recipeIng, "N")
 
@@ -652,7 +655,7 @@ object NonSupervisedRecommender {
     /*
     val sim = readCSV(baseOutputPath, "similarities", Some(options), None)
     val similarities = sim.select(
-      Seq(col("ID_USER"), col("RECIPE_ID")) ++
+      Seq(col("ID_USER"), col("ID_RECIPE")) ++
         sim.columns.filter(!Seq("ID_USER", "ID_RECIPE").contains(_)).map(col(_).cast(DoubleType)):_*)
     val scaled_similarities = normalizeSimilarities(similarities)
       .withColumn("ID_USER", col("ID_USER").cast(IntegerType))

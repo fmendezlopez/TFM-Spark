@@ -1,6 +1,10 @@
 import java.io._
 import java.nio.charset.Charset
 
+import es.uam.eps.tfm.fmendezlopez.utils.SparkUtils._
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.functions._
+
 import scala.collection.convert._
 import scala.collection.JavaConverters._
 import scala.collection.JavaConversions._
@@ -11,8 +15,14 @@ import scala.io.Source
   */
 object Preprocessing {
 
+  val options : Map[String, String] = Map(
+    "sep" -> "|",
+    "encoding" -> "UTF-8",
+    "header" -> "true"
+  )
+
   def main(args: Array[String]): Unit = {
-    changeCharset
+    upgradeDataset
 
   }
   def changeCharset = {
@@ -48,5 +58,34 @@ object Preprocessing {
       bw.close()
     })
 
+  }
+
+  def upgradeDataset = {
+
+    val spark = SparkSession
+      .builder()
+      .master("local[*]")
+      .appName("Preprocessing")
+      .getOrCreate()
+
+    val inputPath = "C:\\Users\\franm\\IdeaProjects\\TFM-Spark\\src\\main\\resources\\input\\baseDataset"
+    val outputPath = "C:\\Users\\franm\\IdeaProjects\\TFM-Spark\\src\\main\\resources\\input\\upgraded_dataset"
+
+    val fav = readCSV(inputPath, "favourites", Some(options), None)
+      .withColumn("RECIPE_TYPE", lit("fav"))
+      .select(col("RECIPE_TYPE"), col("RECIPE_ID"), col("USER_ID"))
+    val publications = readCSV(inputPath, "publications", Some(options), None)
+      .withColumn("RECIPE_TYPE", lit("recipes"))
+      .select(col("RECIPE_TYPE"), col("RECIPE_ID"), col("USER_ID").as("USER_ID"))
+    val madeit = readCSV(inputPath, "madeit", Some(options), None)
+      .withColumn("RECIPE_TYPE", lit("madeit"))
+      .select(col("RECIPE_TYPE"), col("RECIPE_ID"), col("USER_ID").as("USER_ID"))
+    val reviews = readCSV(inputPath, "reviews", Some(options), None)
+      .withColumn("RECIPE_TYPE", lit("review"))
+      .select(col("RECIPE_TYPE"), col("RECIPE_ID"), col("AUTHOR_ID").as("USER_ID"))
+
+    val user_recipes = fav.union(publications).union(madeit).union(reviews)
+
+    writeCSV(user_recipes, outputPath, "user-recipe", Some(options))
   }
 }

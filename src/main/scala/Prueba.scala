@@ -1,6 +1,6 @@
 import java.io.File
 
-import es.uam.eps.tfm.fmendezlopez.allrecipes.NonSupervisedRecommender
+import es.uam.eps.tfm.fmendezlopez.allrecipes.{NonSupervisedRecommender, NonSupervisedRecommender_old}
 import es.uam.eps.tfm.fmendezlopez.utils.SparkUtils
 import org.apache.spark.ml.feature.PCA
 import org.apache.spark.ml.linalg.Vectors
@@ -23,6 +23,29 @@ object Prueba {
       .appName("SparkSessionZipsExample")
       .getOrCreate()
 
+    val data = spark.sparkContext.parallelize(Seq(
+      Row.fromSeq(Seq(100, 1, "recipes")),
+      Row.fromSeq(Seq(101, 1, "recipes")),
+      Row.fromSeq(Seq(101, 1, "reviews")),
+      Row.fromSeq(Seq(102, 1, "recipes")),
+      Row.fromSeq(Seq(103, 1, "recipes")),
+      Row.fromSeq(Seq(104, 1, "recipes")),
+      Row.fromSeq(Seq(100, 2, "recipes")),
+      Row.fromSeq(Seq(101, 2, "recipes")),
+      Row.fromSeq(Seq(105, 2, "reviews")),
+      Row.fromSeq(Seq(106, 2, "reviews"))
+    ))
+
+    val schema = StructType(Seq(
+      StructField("USER_ID", IntegerType),
+      StructField("RECIPE_ID", IntegerType),
+      StructField("type", StringType)
+    ))
+    val df = spark.sqlContext.createDataFrame(data, schema)
+    //NonSupervisedRecommender.contentAnalyzer.g
+  }
+
+  def ex1 = {
     val data = spark.sparkContext.parallelize(Seq(
       Row.fromSeq(Seq(1, 100, 5, 5)),
       Row.fromSeq(Seq(1, 200, 5, 2)),
