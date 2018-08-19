@@ -16,6 +16,12 @@ object Prueba {
 
   private var spark : SparkSession = _
 
+  val options : Map[String, String] = Map(
+    "sep" -> "|",
+    "encoding" -> "UTF-8",
+    "header" -> "true"
+  )
+
   def main(args: Array[String]): Unit = {
     spark = SparkSession
       .builder()
@@ -23,26 +29,10 @@ object Prueba {
       .appName("SparkSessionZipsExample")
       .getOrCreate()
 
-    val data = spark.sparkContext.parallelize(Seq(
-      Row.fromSeq(Seq(100, 1, "recipes")),
-      Row.fromSeq(Seq(101, 1, "recipes")),
-      Row.fromSeq(Seq(101, 1, "reviews")),
-      Row.fromSeq(Seq(102, 1, "recipes")),
-      Row.fromSeq(Seq(103, 1, "recipes")),
-      Row.fromSeq(Seq(104, 1, "recipes")),
-      Row.fromSeq(Seq(100, 2, "recipes")),
-      Row.fromSeq(Seq(101, 2, "recipes")),
-      Row.fromSeq(Seq(105, 2, "reviews")),
-      Row.fromSeq(Seq(106, 2, "reviews"))
-    ))
-
-    val schema = StructType(Seq(
-      StructField("USER_ID", IntegerType),
-      StructField("RECIPE_ID", IntegerType),
-      StructField("type", StringType)
-    ))
-    val df = spark.sqlContext.createDataFrame(data, schema)
-    //NonSupervisedRecommender.contentAnalyzer.g
+    val path = "C:\\Users\\franm\\IdeaProjects\\TFM\\Extractor\\src\\main\\resources\\input\\dataset"
+    val rev = SparkUtils.readCSV(path, "reviews", Some(options), None)
+      .dropDuplicates("ID")
+    SparkUtils.writeCSV(rev, path, "reviews_dupl", Some(options))
   }
 
   def ex1 = {

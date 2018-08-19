@@ -36,8 +36,8 @@ object NonSupervisedRecommender {
       .getOrCreate()
 
     contentAnalyzer
-    profileLearner
-    filteringComponent(100)
+    //profileLearner
+    //filteringComponent(100)
     //evaluate
   }
 
@@ -80,13 +80,16 @@ object NonSupervisedRecommender {
     }
 
     def filterDataset(valid_recipes: DataFrame, dfs: Seq[DataFrame]): Seq[DataFrame] = {
-      dfs.map(df => {
+      valid_recipes.cache()
+      val result = dfs.map(df => {
         println(s"Initial size: ${df.count()}")
         val result = df.join(valid_recipes, "RECIPE_ID")
           .select(df.columns.map(df(_)):_*)
         println(s"Final size: ${result.count()}")
         result
       })
+      valid_recipes.unpersist()
+      result
     }
 
     def getAggValidUserRecipes(valid_user_recipes: DataFrame): DataFrame = {
@@ -189,8 +192,10 @@ object NonSupervisedRecommender {
 
         val trainingSet = valid_user_recipes
           .filter("type = 'recipes'")
+        trainingSet.filter("USER_ID = 855475 AND RECIPE_ID = 13978").show(100)
         val testSet = valid_user_recipes
           .filter("type = 'reviews'")
+        testSet.filter("USER_ID = 855475 AND RECIPE_ID = 13978").show(100)
         println(s"Training set size: ${trainingSet.count()}")
         println(s"Test set size: ${testSet.count()}")
         //trainingSet.show()
@@ -213,7 +218,7 @@ object NonSupervisedRecommender {
         .drop("count")
     }
 
-    /*
+
     lazy val recipes = SparkUtils.readCSV(baseInputPath, "recipes", Some(options), None)
     val nutr = SparkUtils.readCSV(baseInputPath, "nutrition", Some(options), None)
     lazy val nutrition = nutr.select(
@@ -248,17 +253,17 @@ object NonSupervisedRecommender {
     /*Compute ingredients vector*/
     val idf = computeIDF(validated.head, validated(2))
     SparkUtils.writeCSV(idf, baseOutputPath, "idf", Some(options))
-*/
+
     val userSchema = StructType(Seq(
       StructField("RECIPE_ID", IntegerType),
       StructField("USER_ID", IntegerType),
       StructField("type", StringType)
     ))
-    val valid_user_recipes_agg = SparkUtils.readCSV(baseOutputPath, "valid_user_recipes_agg", Some(options), Some(userSchema))
+    //val valid_user_recipes_agg = SparkUtils.readCSV(baseOutputPath, "valid_user_recipes_agg", Some(options), Some(userSchema))
 
     //val valid_user_recipes_agg = spark.sqlContext.createDataFrame(data, schema)
     /*Sampling*/
-    //val stats = getStats(valid_user_recipes_agg)
+    val stats = getStats(valid_user_recipes_agg)
     //SparkUtils.writeCSV(stats, baseOutputPath, "stats", Some(options))
 
     //val idf = SparkUtils.readCSV(baseOutputPath, "idf", Some(options), None)
@@ -270,7 +275,7 @@ object NonSupervisedRecommender {
     ))
 
 
-    val stats = SparkUtils.readCSV(baseOutputPath, "stats", Some(options), Some(statsSchema))
+    //val stats = SparkUtils.readCSV(baseOutputPath, "stats", Some(options), Some(statsSchema))
     //val valid_user_recipes_agg = SparkUtils.readCSV(baseOutputPath, "valid_user_recipes_agg", Some(options), Some(userSchema))
     val (training, test) = sampling.recipesAndReviews(stats, valid_user_recipes_agg, Map(), 10, 30)
     val recipesTraining = SparkUtils.readCSV(datasetPath, "recipes", Some(options), None)
@@ -305,7 +310,7 @@ object NonSupervisedRecommender {
       reviewsTest
     ))
     val user_recipesTes = user_recipesTest
-      .join(training, user_recipesTest("RECIPE_ID") === training("RECIPE_ID") &&
+      .join(test, user_recipesTest("RECIPE_ID") === training("RECIPE_ID") &&
         user_recipesTest("USER_ID") === training("USER_ID"))
       .select(user_recipesTest.columns.map(user_recipesTest(_)) :_*)
     SparkUtils.writeCSV(testDataset(0).dropDuplicates("RECIPE_ID"), testPath, "recipes", Some(options))
@@ -359,18 +364,28 @@ object NonSupervisedRecommender {
     }
 
     def computeIngredients(user_recipe: DataFrame, ingredients: DataFrame, idf: DataFrame): DataFrame = {
+      val user_recipe_count = user_recipe.groupBy("USER_ID").count().withColumnRenamed("count", "N_RECIPES").withColumnRenamed("USER_ID", "USER")
       val ingredients_as1 = ingredients.select(
-        ingredients.columns.filterNot(_ == "RECIPE_ID").map(col(_))
+        ingredients.columns.filterNot(_ == "RECIPE_ID").map(col)
           :+ col("RECIPE_ID").as("RECIPE"):_*)
-      val user_ingredients = user_recipe.join(ingredients_as1, user_recipe("RECIPE_ID") === ingredients_as1("RECIPE"))
-      user_ingredients.groupBy("USER_ID", "ID_INGREDIENT").count().withColumnRenamed("count", "N")
+      val user_ingredients_tmp = user_recipe.join(ingredients_as1, user_recipe("RECIPE_ID") === ingredients_as1("RECIPE"))
+      val user_ingredients = user_ingredients_tmp.groupBy("USER_ID", "ID_INGREDIENT").count().withColumnRenamed("count", "N")
         .join(idf, "ID_INGREDIENT")
         .select(
           col("USER_ID"),
           col("ID_INGREDIENT"),
           col("N"),
-          round((col("N") * col("IDF")), 4).as("WEIGHTED-N").cast(FloatType)
+          round(col("N") * col("IDF"), 4).as("WEIGHTED-N").cast(FloatType)
         )
+      val result = user_ingredients.join(user_recipe_count, user_ingredients("USER") === user_recipe_count("USER"))
+        .select(
+          col("USER_ID"),
+          col("ID_INGREDIENT"),
+          col("ABSOLUTE_FREQUENCY"),
+          col("N_IDF"),
+          (col("N") / col("N_RECIPES")).as("RELATIVE_FREQUENCY"))
+
+      result
     }
 
     val nutrSchema = StructType(Seq(
@@ -441,8 +456,9 @@ object NonSupervisedRecommender {
     val ingSchema = StructType(Seq(
       StructField("USER_ID", IntegerType),
       StructField("ID_INGREDIENT", IntegerType),
-      StructField("N", DoubleType),
-      StructField("WEIGHTED-N", DoubleType)
+      StructField("ABSOLUTE_FREQUENCY", DoubleType),
+      StructField("N_IDF", DoubleType),
+      StructField("RELATIVE_FREQUENCY", DoubleType)
     ))
     val userSchema = StructType(Seq(
       StructField("RECIPE_ID", IntegerType),
@@ -484,11 +500,14 @@ object NonSupervisedRecommender {
       "USER_ID",
       "RECIPE_ID",
       "RATING",
-      "NUT_SIMILARITY",
-      "ING_N_SIMILARITY",
-      "ING_WEIGHTED_SIMILARITY",
-      "N_SIMILARITY",
-      "WEIGHTED_SIMILARITY"))
+      "NUTRITION_SIMILARITY",
+      "ING_ABSOLUTE_SIMILARITY",
+      "ING_RELATIVE_SIMILARITY",
+      "IDF_SIMILARITY",
+      "ABS_NUT_SIMILARITY",
+      "REL_NUT_SIMILARITY",
+      "IDF_NUT_SIMILARITY"
+    ))
 
     /*
     println(nutrition.count())
@@ -538,11 +557,13 @@ object NonSupervisedRecommender {
         val nutrSimilarity: Double = if(recipeNutr.count() == 0) 0.0f else nutritionSimilarity(userNutrition, recipeNutr.head())
 
         val recipeIng = ingredients.filter(s"RECIPE_ID = ${recipeID}")
-        val ingSimilarity1: Double = if(recipeIng.count() == 0) 0.0f else ingredientsSimilarity(userIngredients, recipeIng, "WEIGHTED-N")
-        val ingSimilarity2: Double = if(recipeIng.count() == 0) 0.0f else ingredientsSimilarity(userIngredients, recipeIng, "N")
+        val ingSimilarity1: Double = if(recipeIng.count() == 0) 0.0f else ingredientsSimilarity(userIngredients, recipeIng, "ABSOLUTE_FREQUENCY")
+        val ingSimilarity2: Double = if(recipeIng.count() == 0) 0.0f else ingredientsSimilarity(userIngredients, recipeIng, "RELATIVE_FREQUENCY")
+        val ingSimilarity3: Double = if(recipeIng.count() == 0) 0.0f else ingredientsSimilarity(userIngredients, recipeIng, "N_IDF")
 
         val similarity1:Double = (ingSimilarity1 + nutrSimilarity) / 2
         val similarity2:Double = (ingSimilarity2 + nutrSimilarity) / 2
+        val similarity3:Double = (ingSimilarity3 + nutrSimilarity) / 2
         /*
         if(similarity.isNaN){
           println(s"Similarity is NaN: ${ingSimilarity}, ${nutrSimilarity}")
@@ -553,7 +574,8 @@ object NonSupervisedRecommender {
           ingSimilarity1.formatted("%.4f"),
           ingSimilarity2.formatted("%.4f"),
           similarity1.formatted("%.4f"),
-          similarity2.formatted("%.4f")))
+          similarity2.formatted("%.4f"),
+          similarity3.formatted("%.4f")))
         recommendations += 1
         continue = recommendations < threshold
       } while(user_recipes.hasNext && continue)
