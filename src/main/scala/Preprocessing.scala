@@ -68,7 +68,7 @@ object Preprocessing {
       .appName("Preprocessing")
       .getOrCreate()
 
-    val inputPath = "C:\\Users\\franm\\IdeaProjects\\TFM-Spark\\src\\main\\resources\\input\\baseDataset"
+    val inputPath = "C:\\Users\\franm\\IdeaProjects\\TFM\\Extractor\\src\\main\\resources\\input\\dataset"
     val outputPath = "C:\\Users\\franm\\IdeaProjects\\TFM-Spark\\src\\main\\resources\\input\\upgraded_dataset"
 
     val fav = readCSV(inputPath, "favourites", Some(options), None)
@@ -83,9 +83,15 @@ object Preprocessing {
     val reviews = readCSV(inputPath, "reviews", Some(options), None)
       .withColumn("RECIPE_TYPE", lit("review"))
       .select(col("RECIPE_TYPE"), col("RECIPE_ID"), col("AUTHOR_ID").as("USER_ID"))
+    val ingredients_aux = readCSV(inputPath, "ingredients", Some(options), None)
+    val ingredients = ingredients_aux.select(Seq(col("ID").as("ID_INGREDIENT")) ++ ingredients_aux.columns.filter(_ != "ID").map(col) :_*)
+    val recipes_aux = readCSV(inputPath, "recipes", Some(options), None)
+    val recipes = recipes_aux.select(Seq(col("ID").as("RECIPE_ID")) ++ recipes_aux.columns.filter(_ != "ID").map(col) :_*)
 
     val user_recipes = fav.union(publications).union(madeit).union(reviews)
 
     writeCSV(user_recipes, outputPath, "user-recipe", Some(options))
+    writeCSV(ingredients, outputPath, "ingredients", Some(options ))
+    writeCSV(recipes, outputPath, "recipes", Some(options ))
   }
 }

@@ -35,9 +35,9 @@ object NonSupervisedRecommender {
       .appName("Allrecipes Nonsupervised Recommender")
       .getOrCreate()
 
-    contentAnalyzer
+    //contentAnalyzer
     //profileLearner
-    //filteringComponent(100)
+    filteringComponent(100)
     //evaluate
   }
 
@@ -219,6 +219,7 @@ object NonSupervisedRecommender {
     }
 
 
+    /*
     lazy val recipes = SparkUtils.readCSV(baseInputPath, "recipes", Some(options), None)
     val nutr = SparkUtils.readCSV(baseInputPath, "nutrition", Some(options), None)
     lazy val nutrition = nutr.select(
@@ -253,21 +254,23 @@ object NonSupervisedRecommender {
     /*Compute ingredients vector*/
     val idf = computeIDF(validated.head, validated(2))
     SparkUtils.writeCSV(idf, baseOutputPath, "idf", Some(options))
-
+*/
     val userSchema = StructType(Seq(
       StructField("RECIPE_ID", IntegerType),
       StructField("USER_ID", IntegerType),
       StructField("type", StringType)
     ))
-    //val valid_user_recipes_agg = SparkUtils.readCSV(baseOutputPath, "valid_user_recipes_agg", Some(options), Some(userSchema))
+
+    val valid_user_recipes_agg = SparkUtils.readCSV(baseOutputPath, "valid_user_recipes_agg", Some(options), Some(userSchema))
 
     //val valid_user_recipes_agg = spark.sqlContext.createDataFrame(data, schema)
     /*Sampling*/
     val stats = getStats(valid_user_recipes_agg)
-    //SparkUtils.writeCSV(stats, baseOutputPath, "stats", Some(options))
+    SparkUtils.writeCSV(stats, baseOutputPath, "stats", Some(options))
 
     //val idf = SparkUtils.readCSV(baseOutputPath, "idf", Some(options), None)
 
+    /*
     val statsSchema = StructType(Seq(
       StructField("USER_ID", IntegerType),
       StructField("total_recipes", IntegerType),
@@ -320,6 +323,7 @@ object NonSupervisedRecommender {
       .drop("RECIPE_TYPE")
       .dropDuplicates(Seq("RECIPE_ID", "USER_ID")), testPath, "user-recipe", Some(options))
     SparkUtils.writeCSV(testDataset(3).dropDuplicates("RECIPE_ID", "ID"), testPath, "reviews", Some(options))
+    */
   }
 
   def profileLearner{
@@ -364,7 +368,12 @@ object NonSupervisedRecommender {
     }
 
     def computeIngredients(user_recipe: DataFrame, ingredients: DataFrame, idf: DataFrame): DataFrame = {
-      val user_recipe_count = user_recipe.groupBy("USER_ID").count().withColumnRenamed("count", "N_RECIPES").withColumnRenamed("USER_ID", "USER")
+      val user_recipe_count = user_recipe
+        .groupBy("USER_ID")
+        .count()
+        .withColumnRenamed("USER_ID", "USER")
+        .withColumnRenamed("count", "N_RECIPES")
+
       val ingredients_as1 = ingredients.select(
         ingredients.columns.filterNot(_ == "RECIPE_ID").map(col)
           :+ col("RECIPE_ID").as("RECIPE"):_*)
@@ -377,12 +386,12 @@ object NonSupervisedRecommender {
           col("N"),
           round(col("N") * col("IDF"), 4).as("WEIGHTED-N").cast(FloatType)
         )
-      val result = user_ingredients.join(user_recipe_count, user_ingredients("USER") === user_recipe_count("USER"))
+      val result = user_ingredients.join(user_recipe_count, user_ingredients("USER_ID") === user_recipe_count("USER"))
         .select(
           col("USER_ID"),
           col("ID_INGREDIENT"),
-          col("ABSOLUTE_FREQUENCY"),
-          col("N_IDF"),
+          col("N").as("ABSOLUTE_FREQUENCY"),
+          col("WEIGHTED-N").as("N_IDF"),
           (col("N") / col("N_RECIPES")).as("RELATIVE_FREQUENCY"))
 
       result
@@ -493,7 +502,7 @@ object NonSupervisedRecommender {
       nagg.columns.filterNot(_ == "USER_ID").map(col(_).cast(DoubleType)):_*)
     val ingredients_agg = SparkUtils.readCSV(baseOutputPath, "ingredients_profile", Some(options), Some(ingSchema))
     val testWithRating = reviews
-      .select(col("RECIPE_ID").cast(IntegerType), col("USER_ID").cast(IntegerType).as("USER_ID"), col("RATING").cast(IntegerType))
+      .select(col("RECIPE_ID").cast(IntegerType), col("AUTHOR_ID").cast(IntegerType).as("USER_ID"), col("RATING").cast(IntegerType))
 
     val outputCSV = CSVManager.openCSVWriter(baseOutputPath, "similarities.csv", options("sep").charAt(0))
     outputCSV.writeRow(Seq(
@@ -573,6 +582,7 @@ object NonSupervisedRecommender {
           nutrSimilarity.formatted("%.4f"),
           ingSimilarity1.formatted("%.4f"),
           ingSimilarity2.formatted("%.4f"),
+          ingSimilarity3.formatted("%.4f"),
           similarity1.formatted("%.4f"),
           similarity2.formatted("%.4f"),
           similarity3.formatted("%.4f")))
