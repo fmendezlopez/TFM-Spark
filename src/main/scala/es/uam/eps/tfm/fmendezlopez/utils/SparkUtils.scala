@@ -4,7 +4,7 @@ import java.io.{File, FilenameFilter, PrintWriter}
 
 import org.apache.commons.io.FileUtils
 import org.apache.spark.mllib.evaluation.{BinaryClassificationMetrics, RegressionMetrics}
-import org.apache.spark.sql.types.{DoubleType, StructType}
+import org.apache.spark.sql.types.{DoubleType, IntegerType, StructType}
 import org.apache.spark.sql._
 import org.apache.spark.sql.functions._
 
@@ -51,6 +51,16 @@ object SparkUtils {
     FileUtils.deleteDirectory(new File(myPath))
   }
 
+  def minmaxNormalize(oldMin: Double, oldMax: Double, newMin: Double, newMax: Double, value: Double): Double = {
+    ((value - oldMin) / (oldMax - oldMin)) * (newMax - newMin) + newMin
+  }
+
+  def floorOrCeil(value: Double): Double = {
+    val interval: Double = math.ceil(value) - math.floor(value)
+    if(interval - value > 0.5f) math.floor(value)
+    else math.ceil(value)
+  }
+
   object sql{
     def min(col1: Column, col2: Column) = when(col1 <= col2, col1).otherwise(col2)
     def cosine(left: Row, right: Row, columns: Seq[String]): Double = {
@@ -73,7 +83,7 @@ object SparkUtils {
   }
 
   object evaluation {
-    def regressionEvaluation(df: DataFrame, col1: String, col2: String): (String, String, String) = {
+    def regressionEvaluation(df: DataFrame, col1: String, col2: String): (String, String, String, String) = {
       val regressionMetrics = new RegressionMetrics(df
         .select(
           col(col1).cast(DoubleType),
@@ -81,6 +91,7 @@ object SparkUtils {
         .rdd.map(r => (r.getDouble(0), r.getDouble(1))))
 
       (
+        col2,
         f"${regressionMetrics.meanSquaredError}%.3f",
         f"${regressionMetrics.meanAbsoluteError}%.3f",
         f"${regressionMetrics.rootMeanSquaredError}%.3f"
@@ -97,6 +108,7 @@ object SparkUtils {
 
       val result: Seq[String] =
         Seq(
+          col2,
           f"${binaryMetrics.areaUnderPR()}%.3f",
           f"${binaryMetrics.areaUnderROC()}%.3f") ++
           binaryMetrics.precisionByThreshold.collect().flatMap(t => Seq(f"${t._2}%.3f")) ++

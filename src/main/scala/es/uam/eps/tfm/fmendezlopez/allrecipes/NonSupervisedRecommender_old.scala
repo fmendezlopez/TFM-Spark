@@ -617,7 +617,7 @@ object NonSupervisedRecommender_old {
     }
 
     def regression(similarities: DataFrame) = {
-      val regressionResults: Seq[(String, String, String)] = Seq(
+      val regressionResults: Seq[(String, String, String, String)] = Seq(
         evaluation.regressionEvaluation(similarities, "RATING", "RATING_NUTRITION"),
         evaluation.regressionEvaluation(similarities, "RATING", "RATING_FREQ_INGREDIENT"),
         evaluation.regressionEvaluation(similarities, "RATING", "RATING_WEIGHTED_INGREDIENT"),

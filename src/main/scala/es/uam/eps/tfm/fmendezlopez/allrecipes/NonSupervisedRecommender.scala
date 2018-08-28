@@ -37,8 +37,8 @@ object NonSupervisedRecommender {
 
     //contentAnalyzer
     //profileLearner
-    filteringComponent(100)
-    //evaluate
+    //filteringComponent(100)
+    evaluate
   }
 
     /*Rename example*/
@@ -218,8 +218,6 @@ object NonSupervisedRecommender {
         .drop("count")
     }
 
-
-    /*
     lazy val recipes = SparkUtils.readCSV(baseInputPath, "recipes", Some(options), None)
     val nutr = SparkUtils.readCSV(baseInputPath, "nutrition", Some(options), None)
     lazy val nutrition = nutr.select(
@@ -248,35 +246,33 @@ object NonSupervisedRecommender {
     SparkUtils.writeCSV(validated(4), datasetPath, "reviews", Some(options))
 
     val valid_user_recipes = validated(3)
-    val valid_user_recipes_agg = getAggValidUserRecipes(valid_user_recipes)
+    val valid_user_recipes_agg = getAggValidUserRecipes(valid_user_recipes).cache()
     SparkUtils.writeCSV(valid_user_recipes_agg, baseOutputPath, "valid_user_recipes_agg", Some(options))
 
     /*Compute ingredients vector*/
     val idf = computeIDF(validated.head, validated(2))
     SparkUtils.writeCSV(idf, baseOutputPath, "idf", Some(options))
-*/
+
     val userSchema = StructType(Seq(
       StructField("RECIPE_ID", IntegerType),
       StructField("USER_ID", IntegerType),
       StructField("type", StringType)
     ))
 
-    val valid_user_recipes_agg = SparkUtils.readCSV(baseOutputPath, "valid_user_recipes_agg", Some(options), Some(userSchema))
+    //val valid_user_recipes_agg = SparkUtils.readCSV(baseOutputPath, "valid_user_recipes_agg", Some(options), Some(userSchema))
 
     //val valid_user_recipes_agg = spark.sqlContext.createDataFrame(data, schema)
     /*Sampling*/
-    val stats = getStats(valid_user_recipes_agg)
+    val stats = getStats(valid_user_recipes_agg).cache()
     SparkUtils.writeCSV(stats, baseOutputPath, "stats", Some(options))
 
     //val idf = SparkUtils.readCSV(baseOutputPath, "idf", Some(options), None)
 
-    /*
     val statsSchema = StructType(Seq(
       StructField("USER_ID", IntegerType),
       StructField("total_recipes", IntegerType),
       StructField("total_reviews", IntegerType)
     ))
-
 
     //val stats = SparkUtils.readCSV(baseOutputPath, "stats", Some(options), Some(statsSchema))
     //val valid_user_recipes_agg = SparkUtils.readCSV(baseOutputPath, "valid_user_recipes_agg", Some(options), Some(userSchema))
@@ -323,7 +319,8 @@ object NonSupervisedRecommender {
       .drop("RECIPE_TYPE")
       .dropDuplicates(Seq("RECIPE_ID", "USER_ID")), testPath, "user-recipe", Some(options))
     SparkUtils.writeCSV(testDataset(3).dropDuplicates("RECIPE_ID", "ID"), testPath, "reviews", Some(options))
-    */
+    stats.unpersist()
+    valid_user_recipes_agg.unpersist()
   }
 
   def profileLearner{
@@ -391,9 +388,7 @@ object NonSupervisedRecommender {
           col("USER_ID"),
           col("ID_INGREDIENT"),
           col("N").as("ABSOLUTE_FREQUENCY"),
-          col("WEIGHTED-N").as("N_IDF"),
-          (col("N") / col("N_RECIPES")).as("RELATIVE_FREQUENCY"))
-
+          col("WEIGHTED-N").as("N_IDF"))
       result
     }
 
@@ -511,11 +506,19 @@ object NonSupervisedRecommender {
       "RATING",
       "NUTRITION_SIMILARITY",
       "ING_ABSOLUTE_SIMILARITY",
-      "ING_RELATIVE_SIMILARITY",
       "IDF_SIMILARITY",
       "ABS_NUT_SIMILARITY",
-      "REL_NUT_SIMILARITY",
-      "IDF_NUT_SIMILARITY"
+      "IDF_NUT_SIMILARITY",
+      "SCALED_NUTRITION_SIMILARITY",
+      "SCALED_ING_ABSOLUTE_SIMILARITY",
+      "SCALED_IDF_SIMILARITY",
+      "SCALED_ABS_NUT_SIMILARITY",
+      "SCALED_IDF_NUT_SIMILARITY",
+      "ROUNDED_SCALED_NUTRITION_SIMILARITY",
+      "ROUNDED_SCALED_ING_ABSOLUTE_SIMILARITY",
+      "ROUNDED_SCALED_IDF_SIMILARITY",
+      "ROUNDED_SCALED_ABS_NUT_SIMILARITY",
+      "ROUNDED_SCALED_IDF_NUT_SIMILARITY"
     ))
 
     /*
@@ -534,6 +537,10 @@ object NonSupervisedRecommender {
     val users = user_recipe.select("USER_ID").distinct().cache().collect().iterator
     var continue = true
     var recommendations = 0
+    val newMin = 0f
+    val newMax = 5f
+    val oldMin = 0f
+    val oldMax = 1f
     do{
       val rowUser = users.next()
       val userID = rowUser.getInt(0)
@@ -564,15 +571,18 @@ object NonSupervisedRecommender {
 
         val recipeNutr = nutrition.filter(s"RECIPE_ID = ${recipeID}")
         val nutrSimilarity: Double = if(recipeNutr.count() == 0) 0.0f else nutritionSimilarity(userNutrition, recipeNutr.head())
+        val scaledNutrSimilarity = minmaxNormalize(oldMin, oldMax, newMin, newMax, nutrSimilarity)
 
         val recipeIng = ingredients.filter(s"RECIPE_ID = ${recipeID}")
         val ingSimilarity1: Double = if(recipeIng.count() == 0) 0.0f else ingredientsSimilarity(userIngredients, recipeIng, "ABSOLUTE_FREQUENCY")
-        val ingSimilarity2: Double = if(recipeIng.count() == 0) 0.0f else ingredientsSimilarity(userIngredients, recipeIng, "RELATIVE_FREQUENCY")
-        val ingSimilarity3: Double = if(recipeIng.count() == 0) 0.0f else ingredientsSimilarity(userIngredients, recipeIng, "N_IDF")
+        val scaledingSimilarity1= minmaxNormalize(oldMin, oldMax, newMin, newMax, ingSimilarity1)
+        val ingSimilarity2: Double = if(recipeIng.count() == 0) 0.0f else ingredientsSimilarity(userIngredients, recipeIng, "N_IDF")
+        val scaledingSimilarity2 = minmaxNormalize(oldMin, oldMax, newMin, newMax, ingSimilarity2)
 
         val similarity1:Double = (ingSimilarity1 + nutrSimilarity) / 2
+        val scaledsimilarity1= minmaxNormalize(oldMin, oldMax, newMin, newMax, similarity1)
         val similarity2:Double = (ingSimilarity2 + nutrSimilarity) / 2
-        val similarity3:Double = (ingSimilarity3 + nutrSimilarity) / 2
+        val scaledsimilarity2 = minmaxNormalize(oldMin, oldMax, newMin, newMax, similarity2)
         /*
         if(similarity.isNaN){
           println(s"Similarity is NaN: ${ingSimilarity}, ${nutrSimilarity}")
@@ -582,10 +592,19 @@ object NonSupervisedRecommender {
           nutrSimilarity.formatted("%.4f"),
           ingSimilarity1.formatted("%.4f"),
           ingSimilarity2.formatted("%.4f"),
-          ingSimilarity3.formatted("%.4f"),
           similarity1.formatted("%.4f"),
           similarity2.formatted("%.4f"),
-          similarity3.formatted("%.4f")))
+          scaledNutrSimilarity,
+          scaledingSimilarity1,
+          scaledingSimilarity2,
+          scaledsimilarity1,
+          scaledsimilarity2,
+          floorOrCeil(scaledNutrSimilarity),
+          floorOrCeil(scaledingSimilarity1),
+          floorOrCeil(scaledingSimilarity2),
+          floorOrCeil(scaledsimilarity1),
+          floorOrCeil(scaledsimilarity2)
+        ))
         recommendations += 1
         continue = recommendations < threshold
       } while(user_recipes.hasNext && continue)
@@ -597,48 +616,16 @@ object NonSupervisedRecommender {
 
   def evaluate = {
 
-    def normalizeSimilarities(similarities: DataFrame): DataFrame = {
-      def minmaxNormalize(minCurr: Column, maxCurr: Column, minNew: Column, maxNew: Column, value: Column): Column = {
-        ((value - minCurr) / (maxCurr - minCurr)) * (maxNew - minNew) + minNew
-      }
-
-      def floorOrCeil(value: Column): Column = {
-        val interval = ceil(value) - floor(value)
-        when((interval - value).cast(DoubleType) > lit(0.5).cast(DoubleType), floor(value).cast(IntegerType))
-          .otherwise(ceil(value).cast(IntegerType))
-      }
-      val minCurr = lit(0).cast(DoubleType)
-      val maxCurr = lit(1).cast(DoubleType)
-      val minNew = lit(0).cast(DoubleType)
-      val maxNew = lit(5).cast(DoubleType)
-      similarities
-        .withColumn("SCALED_NUT_SIMILARITY", round(minmaxNormalize(minCurr, maxCurr, minNew, maxNew, col("NUT_SIMILARITY")), 4))
-        .withColumn("SCALED_ING_N_SIMILARITY", round(minmaxNormalize(minCurr, maxCurr, minNew, maxNew, col("ING_N_SIMILARITY")), 4))
-        .withColumn("SCALED_ING_WEIGHTED_SIMILARITY", round(minmaxNormalize(minCurr, maxCurr, minNew, maxNew, col("ING_WEIGHTED_SIMILARITY")), 4))
-        .withColumn("SCALED_N_SIMILARITY", round(minmaxNormalize(minCurr, maxCurr, minNew, maxNew, col("N_SIMILARITY")), 4))
-        .withColumn("SCALED_WEIGHTED_SIMILARITY", round(minmaxNormalize(minCurr, maxCurr, minNew, maxNew, col("WEIGHTED_SIMILARITY")), 4))
-        .withColumn("RATING_NUTRITION", floorOrCeil(col("SCALED_NUT_SIMILARITY")))
-        .withColumn("RATING_FREQ_INGREDIENT", floorOrCeil(col("SCALED_ING_N_SIMILARITY")))
-        .withColumn("RATING_WEIGHTED_INGREDIENT", floorOrCeil(col("SCALED_ING_WEIGHTED_SIMILARITY")))
-        .withColumn("RATING_FREQUENCY", floorOrCeil(col("SCALED_N_SIMILARITY")))
-        .withColumn("RATING_WEIGHTED", floorOrCeil(col("SCALED_WEIGHTED_SIMILARITY")))
-    }
-
     def binary(similarities: DataFrame) = {
 
       val threshold1 = 3
       val threshold2 = 0.5
-      val binaryResults: Seq[Seq[String]] = Seq() :+
-        evaluation.binaryEvaluation(similarities, "RATING", "RATING_NUTRITION", threshold1, threshold1)
-        evaluation.binaryEvaluation(similarities, "RATING", "RATING_FREQ_INGREDIENT", threshold1, threshold1)
-        evaluation.binaryEvaluation(similarities, "RATING", "RATING_WEIGHTED_INGREDIENT", threshold1, threshold1)
-        evaluation.binaryEvaluation(similarities, "RATING", "RATING_FREQUENCY", threshold1, threshold1)
-        evaluation.binaryEvaluation(similarities, "RATING", "RATING_WEIGHTED", threshold1, threshold1)
-        evaluation.binaryEvaluation(similarities, "RATING", "SCALED_NUT_SIMILARITY", threshold1, threshold2)
-        evaluation.binaryEvaluation(similarities, "RATING", "SCALED_ING_N_SIMILARITY", threshold1, threshold2)
-        evaluation.binaryEvaluation(similarities, "RATING", "SCALED_ING_WEIGHTED_SIMILARITY", threshold1, threshold2)
-        evaluation.binaryEvaluation(similarities, "RATING", "SCALED_N_SIMILARITY", threshold1, threshold2)
-        evaluation.binaryEvaluation(similarities, "RATING", "SCALED_WEIGHTED_SIMILARITY", threshold1, threshold2)
+      val binaryResults: Seq[Seq[String]] = Seq(
+        evaluation.binaryEvaluation(similarities, "RATING", "ROUNDED_SCALED_NUTRITION_SIMILARITY", threshold1, threshold2),
+        evaluation.binaryEvaluation(similarities, "RATING", "ROUNDED_SCALED_ING_ABSOLUTE_SIMILARITY", threshold1, threshold2),
+        evaluation.binaryEvaluation(similarities, "RATING", "ROUNDED_SCALED_IDF_SIMILARITY", threshold1, threshold2),
+        evaluation.binaryEvaluation(similarities, "RATING", "ROUNDED_SCALED_ABS_NUT_SIMILARITY", threshold1, threshold2),
+        evaluation.binaryEvaluation(similarities, "RATING", "ROUNDED_SCALED_IDF_NUT_SIMILARITY", threshold1, threshold2))
       val csv = CSVManager.openCSVWriter(baseOutputPath, "binaryEvaluation.csv", '|')
       csv.writeRow(Seq("LABEL","AREA_PR","AREA_ROC","PrecisionNOT","Precision","RecallNOT","Recall","FMeasureNOT","FMeasure"))
       csv.writeAll(binaryResults)
@@ -646,17 +633,12 @@ object NonSupervisedRecommender {
     }
 
     def regression(similarities: DataFrame) = {
-      val regressionResults: Seq[(String, String, String)] = Seq(
-        evaluation.regressionEvaluation(similarities, "RATING", "RATING_NUTRITION"),
-        evaluation.regressionEvaluation(similarities, "RATING", "RATING_FREQ_INGREDIENT"),
-        evaluation.regressionEvaluation(similarities, "RATING", "RATING_WEIGHTED_INGREDIENT"),
-        evaluation.regressionEvaluation(similarities, "RATING", "RATING_FREQUENCY"),
-        evaluation.regressionEvaluation(similarities, "RATING", "RATING_WEIGHTED"),
-        evaluation.regressionEvaluation(similarities, "RATING", "SCALED_NUT_SIMILARITY"),
-        evaluation.regressionEvaluation(similarities, "RATING", "SCALED_ING_N_SIMILARITY"),
-        evaluation.regressionEvaluation(similarities, "RATING", "SCALED_ING_WEIGHTED_SIMILARITY"),
-        evaluation.regressionEvaluation(similarities, "RATING", "SCALED_N_SIMILARITY"),
-        evaluation.regressionEvaluation(similarities, "RATING", "SCALED_WEIGHTED_SIMILARITY"))
+      val regressionResults: Seq[(String, String, String, String)] = Seq(
+        evaluation.regressionEvaluation(similarities, "RATING", "ROUNDED_SCALED_NUTRITION_SIMILARITY"),
+        evaluation.regressionEvaluation(similarities, "RATING", "ROUNDED_SCALED_ING_ABSOLUTE_SIMILARITY"),
+        evaluation.regressionEvaluation(similarities, "RATING", "ROUNDED_SCALED_IDF_SIMILARITY"),
+        evaluation.regressionEvaluation(similarities, "RATING", "ROUNDED_SCALED_ABS_NUT_SIMILARITY"),
+        evaluation.regressionEvaluation(similarities, "RATING", "ROUNDED_SCALED_IDF_NUT_SIMILARITY"))
 
       val csv = CSVManager.openCSVWriter(baseOutputPath, "regressionEvaluation.csv", '|')
       csv.writeRow(Seq("LABEL", "MSE", "MAE", "RMSE"))
@@ -681,88 +663,22 @@ object NonSupervisedRecommender {
       CSVManager.closeCSVWriter(csv)
     }
 
-    /*
-    val sim = readCSV(baseOutputPath, "similarities", Some(options), None)
-    val similarities = sim.select(
-      Seq(col("ID_USER"), col("RECIPE_ID")) ++
-        sim.columns.filter(!Seq("ID_USER", "ID_RECIPE").contains(_)).map(col(_).cast(DoubleType)):_*)
-    val scaled_similarities = normalizeSimilarities(similarities)
-      .withColumn("ID_USER", col("ID_USER").cast(IntegerType))
-      .withColumn("ID_RECIPE", col("ID_RECIPE").cast(IntegerType))
-    writeCSV(scaled_similarities, baseOutputPath, "scaled", Some(options))
-    */
+    val similarities = readCSV(baseOutputPath, "similarities", Some(options), None)
 
-    val scaled_similarities = readCSV(baseOutputPath, "scaled", Some(options), None)
-      .withColumn("ID_USER", col("ID_USER").cast(IntegerType))
-      .withColumn("ID_RECIPE", col("ID_RECIPE").cast(IntegerType))
-
-    regression(scaled_similarities)
-    binary(scaled_similarities)
+    regression(similarities)
+    binary(similarities)
 
     val threshold1 = 3
     val threshold2 = 0.5
     val manualResults: Seq[Seq[String]] = Seq(
-      evaluation.manualEvaluation(scaled_similarities, "RATING", "NORM_RATING", threshold1, threshold1).map(_.formatted("%.3f")),
-      evaluation.manualEvaluation(scaled_similarities, "RATING", "predicted_rating", threshold1, threshold1).map(_.formatted("%.3f")))
+      evaluation.manualEvaluation(similarities, "RATING", "NORM_RATING", threshold1, threshold1).map(_.formatted("%.3f")),
+      evaluation.manualEvaluation(similarities, "RATING", "predicted_rating", threshold1, threshold1).map(_.formatted("%.3f")))
     val csv = CSVManager.openCSVWriter(baseOutputPath, "manualEvaluation.csv", '|')
     csv.writeRow(Seq("LABEL", "TP", "TN", "FP", "FN", "ACC", "PPV", "NPV", "TPR", "TNR", "FPR", "FNR"))
     csv.writeAll(manualResults)
     CSVManager.closeCSVWriter(csv)
-    rankingEvaluation(scaled_similarities)
+    rankingEvaluation(similarities)
 
-    /*old method*/
-    /*
-    def regressionEvaluation(df: DataFrame, col1: String, col2: String) = {
-      println(s"$col1 and $col2")
-      val regressionMetrics = new RegressionMetrics(df
-        .select(
-          col(col1).cast(DoubleType),
-          col(col2).cast(DoubleType))
-        .rdd.map(r => (r.getDouble(0), r.getDouble(1))))
-
-      println(s"MSE = ${regressionMetrics.meanSquaredError}")
-      println(s"MAE = ${regressionMetrics.meanAbsoluteError}")
-      println(s"RMSE = ${regressionMetrics.rootMeanSquaredError}")
-      println()
-    }
-
-    def binaryEvaluation(df: DataFrame, col1: String, col2: String, threshold: Int) = {
-      println(s"$col1 and $col2")
-      val binaryMetrics = new BinaryClassificationMetrics(df
-        .select(
-          col(col1).cast(DoubleType),
-          col(col2).cast(DoubleType))
-        .rdd.map(r => (if(r.getDouble(0) < threshold) 0 else 1, if(r.getDouble(1) < threshold) 0 else 1)))
-
-      val precision = binaryMetrics.precisionByThreshold
-      precision.foreach { case (t, p) =>
-        println(s"Threshold: $t, Precision: $p")
-      }
-    }
-
-
-    val sim = readCSV(baseOutputPath, "similarities", Some(options), None)
-    val similarities = sim.select(
-      Seq(col("ID_USER"), col("ID_RECIPE")) ++
-        sim.columns.filter(!Seq("ID_USER", "ID_RECIPE").contains(_)).map(col(_).cast(DoubleType)):_*)
-    val scaled_similarities = normalizeSimilarities(similarities)
-    writeCSV(scaled_similarities, baseOutputPath, "scaled", Some(options))
-
-    val scaled_similarities = readCSV(baseOutputPath, "scaled", Some(options), None)
-
-    regressionEvaluation(scaled_similarities, "RATING", "RATING_NUTRITION")
-    regressionEvaluation(scaled_similarities, "RATING", "RATING_FREQ_INGREDIENT")
-    regressionEvaluation(scaled_similarities, "RATING", "RATING_WEIGHTED_INGREDIENT")
-    regressionEvaluation(scaled_similarities, "RATING", "RATING_FREQUENCY")
-    regressionEvaluation(scaled_similarities, "RATING", "RATING_WEIGHTED")
-
-    val threshold = 3
-    binaryEvaluation(scaled_similarities, "RATING", "RATING_NUTRITION", threshold)
-    binaryEvaluation(scaled_similarities, "RATING", "RATING_FREQ_INGREDIENT", threshold)
-    binaryEvaluation(scaled_similarities, "RATING", "RATING_WEIGHTED_INGREDIENT", threshold)
-    binaryEvaluation(scaled_similarities, "RATING", "RATING_FREQUENCY", threshold)
-    binaryEvaluation(scaled_similarities, "RATING", "RATING_WEIGHTED", threshold)
-     */
   }
 
 }

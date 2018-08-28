@@ -24,14 +24,14 @@ object PropagationRecommender extends Logging{
     "encoding" -> "UTF-8",
     "header" -> "true"
   )
-  val baseOutputPath = "./src/main/resources/output/recommendation/allrecipes/propagation"
-  val baseInputPath = "./src/main/resources/output/recommendation/allrecipes/preprocessing"
+  val baseOutputPath = "./src/main/resources/output/recommendation/allrecipes/nonsupervised"
+  val baseInputPath = "./src/main/resources/input/upgraded_dataset"
 
   def main(args: Array[String]): Unit = {
     spark = SparkSession
       .builder()
       .master("local[*]")
-      .appName("Allrecipes Recommender")
+      .appName("Allrecipes Propagation Recommender")
       .getOrCreate()
 
     contentAnalyzer
@@ -200,7 +200,7 @@ object PropagationRecommender extends Logging{
       */
     var csv: CSVWriter = null
 
-    val regressionResults: Seq[(String, String, String)] = Seq(
+    val regressionResults: Seq[(String, String, String, String)] = Seq(
       evaluation.regressionEvaluation(prediction, "RATING", "NORM_RATING"),
       evaluation.regressionEvaluation(prediction, "RATING", "predicted_rating"))
 
