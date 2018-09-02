@@ -37,7 +37,7 @@ object NonSupervisedRecommender {
 
     //contentAnalyzer
     //profileLearner
-    //filteringComponent(100)
+    //filteringComponent(1000)
     evaluate
   }
 
@@ -514,11 +514,11 @@ object NonSupervisedRecommender {
       "SCALED_IDF_SIMILARITY",
       "SCALED_ABS_NUT_SIMILARITY",
       "SCALED_IDF_NUT_SIMILARITY",
-      "ROUNDED_SCALED_NUTRITION_SIMILARITY",
-      "ROUNDED_SCALED_ING_ABSOLUTE_SIMILARITY",
-      "ROUNDED_SCALED_IDF_SIMILARITY",
-      "ROUNDED_SCALED_ABS_NUT_SIMILARITY",
-      "ROUNDED_SCALED_IDF_NUT_SIMILARITY"
+      "avgN",
+      "absI",
+      "weightI",
+      "absN",
+      "weightN"
     ))
 
     /*
@@ -617,15 +617,14 @@ object NonSupervisedRecommender {
   def evaluate = {
 
     def binary(similarities: DataFrame) = {
-
       val threshold1 = 3
       val threshold2 = 0.5
       val binaryResults: Seq[Seq[String]] = Seq(
-        evaluation.binaryEvaluation(similarities, "RATING", "ROUNDED_SCALED_NUTRITION_SIMILARITY", threshold1, threshold2),
-        evaluation.binaryEvaluation(similarities, "RATING", "ROUNDED_SCALED_ING_ABSOLUTE_SIMILARITY", threshold1, threshold2),
-        evaluation.binaryEvaluation(similarities, "RATING", "ROUNDED_SCALED_IDF_SIMILARITY", threshold1, threshold2),
-        evaluation.binaryEvaluation(similarities, "RATING", "ROUNDED_SCALED_ABS_NUT_SIMILARITY", threshold1, threshold2),
-        evaluation.binaryEvaluation(similarities, "RATING", "ROUNDED_SCALED_IDF_NUT_SIMILARITY", threshold1, threshold2))
+        evaluation.binaryEvaluation(similarities, "RATING", "avgN", threshold1, threshold1),
+        evaluation.binaryEvaluation(similarities, "RATING", "absI", threshold1, threshold1),
+        evaluation.binaryEvaluation(similarities, "RATING", "weightI", threshold1, threshold1),
+        evaluation.binaryEvaluation(similarities, "RATING", "absN", threshold1, threshold1),
+        evaluation.binaryEvaluation(similarities, "RATING", "weightN", threshold1, threshold1))
       val csv = CSVManager.openCSVWriter(baseOutputPath, "binaryEvaluation.csv", '|')
       csv.writeRow(Seq("LABEL","AREA_PR","AREA_ROC","PrecisionNOT","Precision","RecallNOT","Recall","FMeasureNOT","FMeasure"))
       csv.writeAll(binaryResults)
@@ -634,11 +633,11 @@ object NonSupervisedRecommender {
 
     def regression(similarities: DataFrame) = {
       val regressionResults: Seq[(String, String, String, String)] = Seq(
-        evaluation.regressionEvaluation(similarities, "RATING", "ROUNDED_SCALED_NUTRITION_SIMILARITY"),
-        evaluation.regressionEvaluation(similarities, "RATING", "ROUNDED_SCALED_ING_ABSOLUTE_SIMILARITY"),
-        evaluation.regressionEvaluation(similarities, "RATING", "ROUNDED_SCALED_IDF_SIMILARITY"),
-        evaluation.regressionEvaluation(similarities, "RATING", "ROUNDED_SCALED_ABS_NUT_SIMILARITY"),
-        evaluation.regressionEvaluation(similarities, "RATING", "ROUNDED_SCALED_IDF_NUT_SIMILARITY"))
+        evaluation.regressionEvaluation(similarities, "RATING", "avgN"),
+        evaluation.regressionEvaluation(similarities, "RATING", "absI"),
+        evaluation.regressionEvaluation(similarities, "RATING", "weightI"),
+        evaluation.regressionEvaluation(similarities, "RATING", "absN"),
+        evaluation.regressionEvaluation(similarities, "RATING", "weightN"))
 
       val csv = CSVManager.openCSVWriter(baseOutputPath, "regressionEvaluation.csv", '|')
       csv.writeRow(Seq("LABEL", "MSE", "MAE", "RMSE"))
@@ -647,37 +646,54 @@ object NonSupervisedRecommender {
     }
 
     def rankingEvaluation(similarities: DataFrame) = {
-      val k_values = Seq(10, 5, 50, 100)
+      val k_values = Seq(5, 10, 30)
       val columns = Seq(
-        "NUT_SIMILARITY",
-        "ING_N_SIMILARITY",
-        "ING_WEIGHTED_SIMILARITY",
-        "N_SIMILARITY",
-        "WEIGHTED_SIMILARITY")
-      val seqs: Seq[Seq[Float]] = columns.map(column => {
-        evaluation.precisionAtK(similarities, "ID_USER", "ID_RECIPE", "RATING", column, k_values)
+        "avgN",
+        "absI",
+        "weightI",
+        "absN",
+        "weightN")
+      val thresholdRelevant = 3
+      val seqs: Seq[Seq[String]] = columns.map(column => {
+        evaluation.precisionAtK(similarities, "USER_ID", "RECIPE_ID", "RATING", column, k_values, thresholdRelevant)
       })
       val csv = CSVManager.openCSVWriter(baseOutputPath, "rankingEvaluation.csv", '|')
-      csv.writeRow(k_values.map(s => s"top@$s"))
+      csv.writeRow(Seq("LABEL") ++ k_values.map(k => s"P@$k"))
       csv.writeAll(seqs)
       CSVManager.closeCSVWriter(csv)
     }
 
-    val similarities = readCSV(baseOutputPath, "similarities", Some(options), None)
+    def manualEvaluation(similarities: DataFrame) = {
+      val threshold1 = 3
+      val threshold2 = 0.5f
+      val manualResults: Seq[Seq[String]] = Seq(
+        evaluation.manualEvaluation(similarities, "RATING", "NUTRITION_SIMILARITY", threshold1, threshold2),
+        evaluation.manualEvaluation(similarities, "RATING", "ING_ABSOLUTE_SIMILARITY", threshold1, threshold2),
+        evaluation.manualEvaluation(similarities, "RATING", "IDF_SIMILARITY", threshold1, threshold2),
+        evaluation.manualEvaluation(similarities, "RATING", "ABS_NUT_SIMILARITY", threshold1, threshold2),
+        evaluation.manualEvaluation(similarities, "RATING", "IDF_NUT_SIMILARITY", threshold1, threshold2)
+      )
+      val csv = CSVManager.openCSVWriter(baseOutputPath, "manualEvaluation.csv", '|')
+      csv.writeRow(Seq("LABEL", "True Positives", "True Negatives", "False Positives", "False Negatives",
+        "Accuracy", "Precision", "Negative Predictive Value", "Recall", "Specificity", "False Positive Rate",
+        "False Negative Rate", "ROC"))
+      csv.writeAll(manualResults)
+      CSVManager.closeCSVWriter(csv)
+    }
 
-    regression(similarities)
-    binary(similarities)
+    val similarities_aux = readCSV(baseOutputPath, "similarities", Some(options), None)
+    val const_cols = Seq("USER_ID", "RECIPE_ID")
+    val similarities = similarities_aux
+      .select(
+        const_cols.map(col) ++
+        similarities_aux.columns.filterNot(const_cols.contains(_)).map(name => col(name).cast(DoubleType).as(name)).toSeq
+        :_*
+      )
 
-    val threshold1 = 3
-    val threshold2 = 0.5
-    val manualResults: Seq[Seq[String]] = Seq(
-      evaluation.manualEvaluation(similarities, "RATING", "NORM_RATING", threshold1, threshold1).map(_.formatted("%.3f")),
-      evaluation.manualEvaluation(similarities, "RATING", "predicted_rating", threshold1, threshold1).map(_.formatted("%.3f")))
-    val csv = CSVManager.openCSVWriter(baseOutputPath, "manualEvaluation.csv", '|')
-    csv.writeRow(Seq("LABEL", "TP", "TN", "FP", "FN", "ACC", "PPV", "NPV", "TPR", "TNR", "FPR", "FNR"))
-    csv.writeAll(manualResults)
-    CSVManager.closeCSVWriter(csv)
-    rankingEvaluation(similarities)
+    //regression(similarities)
+    //binary(similarities)
+    //rankingEvaluation(similarities)
+    manualEvaluation(similarities)
 
   }
 

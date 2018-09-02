@@ -643,8 +643,8 @@ object NonSupervisedRecommender_old {
         "ING_WEIGHTED_SIMILARITY",
         "N_SIMILARITY",
         "WEIGHTED_SIMILARITY")
-      val seqs: Seq[Seq[Float]] = columns.map(column => {
-        evaluation.precisionAtK(similarities, "ID_USER", "ID_RECIPE", "RATING", column, k_values)
+      val seqs: Seq[Seq[String]] = columns.map(column => {
+        evaluation.precisionAtK(similarities, "ID_USER", "ID_RECIPE", "RATING", column, k_values, 1)
       })
       val csv = CSVManager.openCSVWriter(baseOutputPath, "rankingEvaluation.csv", '|')
       csv.writeRow(k_values.map(s => s"top@$s"))

@@ -69,7 +69,7 @@ object Prueba {
       })
     })
 
-    val seq = SparkUtils.evaluation.precisionAtK(df, "ID_USER", "ID_RECIPE", "RATING", "PREDICTION", Seq.range(1, 5))
+    val seq = SparkUtils.evaluation.precisionAtK(df, "ID_USER", "ID_RECIPE", "RATING", "PREDICTION", Seq.range(1, 5), 3)
     seq.foreach(println)
   }
 

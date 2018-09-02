@@ -55,7 +55,7 @@ object Preprocesser {
       .select(Seq(col("ID").as("ID_INGREDIENT")) ++ ingredients_aux.columns.filter(_ != "ID").map(col) :_*)
     val recipes_aux = readCSV(inputPath, "recipes", Some(options), None)
     val recipes = recipes_aux.select(Seq(col("ID").as("RECIPE_ID")) ++ recipes_aux.columns.filter(_ != "ID").map(col) :_*)
-
+    deleteReviewsWithoutRecipe(reviews_aux, recipes_aux, "")
     val user_recipes = fav.union(publications).union(madeit).union(reviews)
 
     writeCSV(user_recipes, outputPath, "user-recipe", Some(options))

@@ -4,8 +4,10 @@ import java.io.{File, FilenameFilter, PrintWriter}
 
 import org.apache.commons.io.FileUtils
 import org.apache.spark.mllib.evaluation.{BinaryClassificationMetrics, RegressionMetrics}
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.types.{DoubleType, IntegerType, StructType}
 import org.apache.spark.sql._
+import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions._
 
 import scala.collection.mutable
@@ -62,6 +64,11 @@ object SparkUtils {
   }
 
   object sql{
+    def floorOrCeil(value: Column): Column = {
+      val interval = ceil(value) - floor(value)
+      when((interval - value).cast(DoubleType) > lit(0.5).cast(DoubleType), floor(value).cast(IntegerType))
+        .otherwise(ceil(value).cast(IntegerType))
+    }
     def min(col1: Column, col2: Column) = when(col1 <= col2, col1).otherwise(col2)
     def cosine(left: Row, right: Row, columns: Seq[String]): Double = {
       def mod(row: Row, columns: Seq[String]): Double = {
@@ -98,17 +105,19 @@ object SparkUtils {
       )
     }
 
-    def binaryEvaluation(df: DataFrame, col1: String, col2: String, threshold1: Double, threshold2: Double):
+    def binaryEvaluation(df: DataFrame, label: String, predictionLabel: String, threshold1: Double, threshold2: Double):
     Seq[String] = {
-      val binaryMetrics = new BinaryClassificationMetrics(df
+      //RDD[prediction, label-real value]
+      val rdd: RDD[(Double, Double)] = df
         .select(
-          col(col1).cast(DoubleType),
-          col(col2).cast(DoubleType))
-        .rdd.map(r => (if(r.getDouble(0) < threshold1) 0 else 1, if(r.getDouble(1) < threshold2) 0 else 1)))
+          col(predictionLabel).cast(DoubleType),
+          col(label).cast(DoubleType))
+        .rdd.map(r => (if(r.getDouble(0) < threshold1) 0 else 1, if(r.getDouble(1) < threshold2) 0 else 1))
+      val binaryMetrics = new BinaryClassificationMetrics(rdd)
 
       val result: Seq[String] =
         Seq(
-          col2,
+          predictionLabel,
           f"${binaryMetrics.areaUnderPR()}%.3f",
           f"${binaryMetrics.areaUnderROC()}%.3f") ++
           binaryMetrics.precisionByThreshold.collect().flatMap(t => Seq(f"${t._2}%.3f")) ++
@@ -118,12 +127,14 @@ object SparkUtils {
       result
     }
 
-    def manualEvaluation(df: DataFrame, col1: String, col2: String, threshold1: Double, threshold2: Double): Seq[Double] = {
+    def manualEvaluation(df: DataFrame, col1: String, col2: String, threshold1: Double, threshold2: Double): Seq[String] = {
+      df.cache()
       val typed = df
         .withColumn("type",
           when(col(col2) >= lit(threshold2), when(col(col1) >= lit(threshold1), lit("TP")).otherwise(lit("FP")))
             .otherwise(when(col(col1) < lit(threshold1), lit("TN")).otherwise(lit("FN")))
         )
+      //typed.filter("USER_ID = '855475' AND RECIPE_ID='18509'").show()
 
       val tp = typed.filter("type = 'TP'").count().toFloat
       val tn = typed.filter("type = 'TN'").count().toFloat
@@ -137,26 +148,53 @@ object SparkUtils {
       val TNR: Float = tn / (tn + fp)
       val FPR: Float = fp / (fp + tn)
       val FNR: Float = fn / (fn + tp)
-
+      df.unpersist()
       Seq(
-        tp,
-        tn,
-        fp,
-        fn,
-        ACC,
-        PPV,
-        NPV,
-        TPR,
-        TNR,
-        FPR,
-        FNR)
+        col2,
+        f"$tp%.3f",
+        f"$tn%.3f",
+        f"$fp%.3f",
+        f"$fn%.3f",
+        f"$ACC%.3f",
+        f"$PPV%.3f",
+        f"$NPV%.3f",
+        f"$TPR%.3f",
+        f"$TNR%.3f",
+        f"$FPR%.3f",
+        f"$FNR%.3f",
+        {if(FPR == 0) "MAX" else f"${TPR / FPR}%.3f"}
+      )
     }
 
-    def precisionAtK(df: DataFrame, userCol: String, recipeCol: String, col1: String, col2: String, values: Seq[Int]): Seq[Float] = {
+    def precisionAtK(
+                      df: DataFrame, userCol: String, recipeCol: String,
+                      col1: String, col2: String, values: Seq[Int],
+                      thresholdRelevant: Double
+                    ): Seq[String] = {
       val result: mutable.Seq[Float] = mutable.Seq.fill(values.length)(0)
       var nusers = 0
-      val users = df.select(userCol).distinct().collect()
-      println(s"number of users: ${users.length}")
+      df.cache()
+      ///val users = df.select(userCol).distinct().collect()
+      //println(s"number of users: ${users.length}")
+      val k = 5
+      val map: Map[Int, String] = values.flatMap(k => {
+        val precision = df
+          .select(
+            col(userCol),
+            col(col1),
+            col(col2),
+            row_number().over(Window.partitionBy(userCol).orderBy(col2)).as("ROW_NUM")
+          )
+          .filter(s"ROW_NUM <= $k")
+          .withColumn("IS_RELEVANT", when(col(col1) >= lit(thresholdRelevant), lit(1)).otherwise(lit(0)))
+          .groupBy("USER_ID").agg((sum(col("IS_RELEVANT")) / lit(k)).as(s"PU@$k"))
+          .select(avg(s"PU@$k").as(s"P@$k"))
+          .rdd.collect().head.getDouble(0)
+        Map(k -> f"$precision%.3f")
+      }).toMap
+      df.unpersist()
+      Seq(col2) ++ map.values.toSeq
+      /*
       users.map(row => {
         val id_user = row.getInt(0)
         val recipes = df.filter(s"$userCol = $id_user")
@@ -180,7 +218,8 @@ object SparkUtils {
         println(s"user $nusers")
         //println(result.mkString(","))
       })
-      result.map(_ / nusers)
+      */
+      //result.map(_ / nusers)
     }
   }
 }
